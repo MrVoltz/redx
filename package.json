@@ -1,27 +1,31 @@
 {
-  "name": "krunchyx",
+  "name": "redx",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "lib/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npx uvu"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MrVoltz/krunchyx.git"
+    "url": "git+https://github.com/MrVoltz/redx.git"
   },
   "author": "",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/MrVoltz/krunchyx/issues"
+    "url": "https://github.com/MrVoltz/redx/issues"
   },
-  "homepage": "https://github.com/MrVoltz/krunchyx#readme",
+  "homepage": "https://github.com/MrVoltz/redx#readme",
   "dependencies": {
     "axios": "^0.22.0",
     "bluebird": "^3.7.2",
+    "bson": "^4.5.2",
     "lz4": "^0.6.5",
     "lzma-native": "^8.0.1",
-    "read-bytes-stream": "^1.0.1",
+    "through2": "^4.0.2",
     "underscore": "^1.13.1"
+  },
+  "devDependencies": {
+    "uvu": "^0.5.1"
   }
 }
