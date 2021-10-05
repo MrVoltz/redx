@@ -1,0 +1,27 @@
+{
+  "name": "krunchyx",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrVoltz/krunchyx.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/MrVoltz/krunchyx/issues"
+  },
+  "homepage": "https://github.com/MrVoltz/krunchyx#readme",
+  "dependencies": {
+    "axios": "^0.22.0",
+    "bluebird": "^3.7.2",
+    "lz4": "^0.6.5",
+    "lzma-native": "^8.0.1",
+    "read-bytes-stream": "^1.0.1",
+    "underscore": "^1.13.1"
+  }
+}
