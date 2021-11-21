@@ -1,0 +1,48 @@
+{
+  "name": "test",
+  "globalDuration": 4,
+  "tracks": [
+    {
+      "trackType": "Discrete",
+      "valueType": "bool",
+      "data": {
+        "node": "testNode",
+        "property": "testProperty",
+        "keyframes": [
+          { "time": 0, "value": false },
+          { "time": 1, "value": true },
+          { "time": 2, "value": false },
+          { "time": 3, "value": true }
+        ] 
+      }      
+    },
+    {
+      "trackType": "Discrete",
+      "valueType": "int",
+      "data": {
+        "node": "testNode",
+        "property": "testProperty",
+        "keyframes": [
+          { "time": 0, "value": 0 },
+          { "time": 1, "value": 2 },
+          { "time": 2, "value": 4 },
+          { "time": 3, "value": 6 }
+        ] 
+      }  
+    },
+    {
+      "trackType": "Discrete",
+      "valueType": "string",
+      "data": {
+        "node": "testNode",
+        "property": "testProperty",
+        "keyframes": [
+          { "time": 0, "value": "zero" },
+          { "time": 1, "value": "one" },
+          { "time": 2, "value": "two" },
+          { "time": 3, "value": "lel" }
+        ] 
+      }  
+    }
+  ]
+}

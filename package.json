@@ -2,9 +2,11 @@
   "name": "redx",
   "version": "1.0.0",
   "description": "",
-  "main": "lib/index.js",
   "scripts": {
-    "test": "npx uvu"
+    "test": "npx uvu",
+    "spider": "node bin/spider.js",
+    "server": "node bin/server.js",
+    "dump": "node bin/dump.js"
   },
   "repository": {
     "type": "git",
@@ -17,6 +19,7 @@
   },
   "homepage": "https://github.com/MrVoltz/redx#readme",
   "dependencies": {
+    "@elastic/elasticsearch": "^7.15.0",
     "axios": "^0.22.0",
     "bluebird": "^3.7.2",
     "bson": "^4.5.2",
