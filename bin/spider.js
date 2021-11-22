@@ -90,6 +90,18 @@ function maybeIndexPendingRecord(rec) {
 	});
 }
 
+function maybeFetchWorldRecord(uri) {
+	return Promise.try(() => {
+		uri = cloudx.parseUri(uri);
+		if(uri.protocol !== "neosrec:") {
+			console.log(`maybeFetchWorldRecord ${uri} skipping external uri`);
+			return;
+		}
+
+		return fetchAndIndexRecord(uri);
+	});
+}
+
 function indexDirectoryRecord(rec) {
 	return cloudx.fetchDirectoryChildren(rec).map(childRec => {
 		return maybeIndexPendingRecord(childRec);
@@ -134,7 +146,7 @@ function indexObjectRecord(rec) {
 		});
 	}).tap((rec) => {
 		if(rec.worldUri)
-			return fetchAndIndexRecord(rec.worldUri);
+			return maybeFetchWorldRecord(rec.worldUri);
 	}).tap((rec) => {
 		if(rec.inventoryLinkUris)
 			return indexRecordUris(rec.inventoryLinkUris);
