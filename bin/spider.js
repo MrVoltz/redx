@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const Promise = require("bluebird"),
 	fsPromises = require("fs/promises"),
 	fs = require("fs"),
@@ -133,6 +135,9 @@ function indexObjectRecord(rec) {
 	}).tap((rec) => {
 		if(rec.worldUri)
 			return fetchAndIndexRecord(rec.worldUri);
+	}).tap((rec) => {
+		if(rec.inventoryLinkUris)
+			return indexRecordUris(rec.inventoryLinkUris);
 	}).then((rec) => {
 		return db.indexRecord(rec);
 	});
