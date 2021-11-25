@@ -1,28 +1,50 @@
 require("dotenv").config();
 
 const express = require("express"),
+	_ = require("underscore"),
 	{ param, query, matchedData, validationResult } = require("express-validator");
 
 const makeInventoryLink = require("../data/inventorylink"),
 	{ writePackedObject } = require("../lib/objectloader"),
-	{ parseUri } = require("../lib/cloudx"),
-	{ searchRecords } = require("../lib/db");
+	{ parseUri, getRecordUri, getRecordIdType } = require("../lib/cloudx"),
+	{ searchRecords, getRecord } = require("../lib/db"),
+	{ writeAnimX } = require("../lib/animx");
 
 const app = express();
 
 app.set("json spaces", 2);
+
+const JSON_FIELDS = [
+	"_id", "_score", "ownerId", "ownerName", "id", "name", "tags",
+	"recordType", "objectType", "type", "path", "assetUri", "spawnUri", "spawnParentUri", "thumbnailUri",
+];
+
+const ANIMJ_FIELDS = [
+	"ownerName", "name", "type", "path", "spawnUri", "spawnParentUri", "thumbnailUri"
+];
+
+const LINK_ENDPOINT_VERSION = 2;
+
+function validateRequest(req) {
+	let errors = validationResult(req);
+	if(!errors.isEmpty()) {
+		req.res.status(400).json({ message: "Invalid request", errors: errors.array() });
+		return false;
+	}
+	return true;
+}
 
 app.get("/search.:format", [
 	param("format").isIn(["animx","animj","json"]),
 	query("type").toArray(),
 	query("q").trim().optional(),
 	query("size").isInt({ min: 1, max: 200 }).toInt().optional(),
-	query("from").isInt({ min: 0 }).toInt().optional()
+	query("from").isInt({ min: 0 }).toInt().optional(),
+	query("v").isInt({ min: -(2**31), max: (2**31)-1 }).toInt().optional()
 ], (req, res, next) => {
-	let { format, type, q, size, from } = matchedData(req);
-	let errors = validationResult(req);
-	if(!errors.isEmpty())
-		return res.status(400).json({ errors: errors.array() });
+	let { format, type, q, size, from, v } = matchedData(req);
+	if(!validateRequest(req))
+		return;
 
 	if(size === undefined)
 		size = 10;
@@ -30,15 +52,19 @@ app.get("/search.:format", [
 		from = 0;
 	if(q === undefined)
 		q = "";
+	if(v === undefined)
+		v = 0;
+
+	let baseUrl = `${req.protocol}://${req.get("host")}${req.baseUrl}`;
 
 	let fulltextQuery;
 	if(q !== "")
 		fulltextQuery = {
 			dis_max: {
 				queries: [
-					{ match: { simpleName: { query: q, fuzziness: "AUTO", boost: 2 }}},
-					{ match: { ownerPathNameSearchable: { query: q, fuzziness: "AUTO", boost: 2 } }},
-					{ match: { tagsSearchable: { query: q, fuzziness: "AUTO", boost: 1 } }}
+					{ match: { simpleName: { query: String(q), fuzziness: "AUTO", boost: 2 }}},
+					{ match: { ownerPathNameSearchable: { query: String(q), fuzziness: "AUTO", boost: 2 } }},
+					{ match: { tagsSearchable: { query: String(q), fuzziness: "AUTO", boost: 1 } }}
 				],
 				tie_breaker: 0.7
 			}
@@ -47,9 +73,9 @@ app.get("/search.:format", [
 	let recordTypes = [], objectTypes = [];
 	for(let t of type) {
 		if([ "directory", "link", "object", "world" ].indexOf(t) !== -1)
-			recordTypes.push(t);
+			recordTypes.push(String(t));
 		else
-			objectTypes.push(t);
+			objectTypes.push(String(t));
 	}
 
 	let typeQueries = [];
@@ -65,10 +91,78 @@ app.get("/search.:format", [
 			minimum_should_match: typeQueries.length ? 1 : 0
 		}
 	}, size, from).then(({ total, hits }) => {
+		for(let rec of hits) {
+			rec.type = rec.recordType === "object" ? rec.objectType : rec.recordType;
+			if(rec.recordType === "directory")
+				rec.spawnUri = `${baseUrl}/link.bson?target=${encodeURIComponent(getRecordUri(rec))}&targetName=${encodeURIComponent(rec.name)}&v=${encodeURIComponent(LINK_ENDPOINT_VERSION)}`;
+			else if(rec.recordType === "link")
+				rec.spawnUri = `${baseUrl}/link.bson?target=${encodeURIComponent(rec.assetUri)}&targetName=${encodeURIComponent(rec.name)}&v=${encodeURIComponent(LINK_ENDPOINT_VERSION)}`;
+			else if(rec.recordType === "object")
+				rec.spawnUri = rec.assetUri;
+			else
+				rec.spawnUri = null;
+			if(rec.recordType !== "world")
+				rec.spawnParentUri = `${baseUrl}/parent-link.bson?ownerId=${encodeURIComponent(rec.ownerId)}&id=${encodeURIComponent(rec.id)}&v=${encodeURIComponent(LINK_ENDPOINT_VERSION)}`;
+			else
+				rec.spawnParentUri = null;
+		}
+
 		if(format === "json")
-			return res.json({ total, hits });
+			return res.json({
+				total,
+				hits: hits.map(h => _.pick(h, JSON_FIELDS))
+			});
 
+		hits.push({}); // terminator
 
+		let animjTracks = [
+			{
+				trackType: "Discrete",
+				valueType: "int",
+				data: {
+					node: "_meta",
+					property: "v",
+					keyframes: [
+						{ time: 0, value: v }
+					]
+				}
+			},
+			{
+				trackType: "Discrete",
+				valueType: "int",
+				data: {
+					node: "_meta",
+					property: "total",
+					keyframes: [
+						{ time: 0, value: total }
+					]
+				}
+			},
+			...ANIMJ_FIELDS.map(f => {
+				return {
+					trackType: "Discrete",
+					valueType: "string",
+					data: {
+						node: "hits",
+						property: f,
+						keyframes: _.map(hits, (h, time) => ({
+							time, value: h[f] || null
+						}))
+					}
+				}
+			})
+		];
+
+		let animj = {
+			name: "response",
+			globalDuration: Math.max(hits.length, 1),
+			tracks: animjTracks
+		};
+
+		if(format === "animj")
+			return res.json(animj);
+
+		res.send(writeAnimX(animj));
 	}).catch(next);
 });
 
@@ -77,17 +171,85 @@ function isRecordUri(uri) {
 	return uri.protocol === "neosrec:";
 }
 
-app.get("/inventory-link.bson", [
+function isOwnerId(id) {
+	let type = getRecordIdType(id);
+	return type === "U" || type === "G";
+}
+
+function isRecordId(id) {
+	return getRecordIdType(id) === "R";
+}
+
+app.get("/link.bson", [
 	query("target").trim().custom(isRecordUri),
 	query("targetName").trim().notEmpty()
 ], (req, res, next) => {
 	let { target, targetName } = matchedData(req);
-	let errors = validationResult(req);
-	if(!errors.isEmpty())
-		return res.status(400).json({ errors: errors.array() });
+	if(!validateRequest(req))
+		return;
 
 	let stream = writePackedObject(makeInventoryLink(target, targetName), "bson");
 	stream.pipe(res);
+});
+
+app.get("/parent-link.bson", [
+	query("ownerId").trim().custom(isOwnerId),
+	query("id").trim().custom(isRecordId),
+	query("depth").isInt({ min: 0 }).toInt().optional()
+], (req, res, next) => {
+	let { ownerId, id, depth } = matchedData(req);
+	if(!validateRequest(req))
+		return;
+	if(depth === undefined)
+		depth = 0;
+
+	getRecord(ownerId, id).then(rec => {
+		if(!rec)
+			throw "404";
+
+		let parts = rec.path.split("\\");
+		if(rec.recordType === "directory")
+			parts.push(rec.name);
+
+		depth = Math.max(depth, 1); // skip Inventory
+
+		let should = [];
+		for(let i = Math.min(depth, parts.length-1); i < parts.length; i++) {
+			should.push({
+				bool: {
+					must: [
+						{ term: { path: String(parts.slice(0, i).join("\\")) }},
+						{ term: { "name.name": String(parts[i]) }}
+					]
+				}
+			});
+		}
+
+		let query = {
+			bool: {
+				must: [
+					{ term: { recordType: "directory" }},
+					{ term: { ownerId: String(rec.ownerId) }}
+				],
+				should,
+				minimum_should_match: 1
+			}
+		};
+
+		return searchRecords(query, parts.length, 0);
+	}).then(({ total, hits }) => {
+		if(!hits.length)
+			throw "404";
+		hits = _.sortBy(hits, h => h.path.length);
+		let rec = hits[0];
+
+		let stream = writePackedObject(makeInventoryLink(getRecordUri(rec), rec.name), "bson");
+		stream.pipe(res);
+	}).catch(err => {
+		if(err !== "404")
+			throw err;
+		res.status(404).json({ message: "Record not found" });
+	}).catch(next);
 });
 
 app.use((req, res, next) => {
