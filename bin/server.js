@@ -13,6 +13,7 @@ const makeInventoryLink = require("../data/inventorylink"),
 const app = express();
 
 app.set("json spaces", 2);
+app.set("trust proxy", "loopback");
 
 const JSON_FIELDS = [
 	"_id", "_score", "ownerId", "ownerName", "id", "name", "tags",
