@@ -8,23 +8,30 @@ const makeInventoryLink = require("../data/inventorylink"),
 	{ writePackedObject } = require("../lib/objectloader"),
 	{ parseUri, getRecordUri, getRecordIdType } = require("../lib/cloudx"),
 	{ searchRecords, getRecord } = require("../lib/db"),
-	{ writeAnimX } = require("../lib/animx");
+	{ sendHits } = require("../lib/server-utils"),
+	{ ax } = require("../lib/utils");
 
 const app = express();
 
 app.set("json spaces", 2);
+
+app.set("port", process.env.PORT || 8002);
 app.set("trust proxy", "loopback");
 
-const JSON_FIELDS = [
-	"_id", "_score", "ownerId", "ownerName", "id", "name", "tags",
-	"recordType", "objectType", "type", "path", "assetUri", "spawnUri", "spawnParentUri", "thumbnailUri",
-];
-
-const ANIMJ_FIELDS = [
-	"ownerName", "name", "type", "path", "spawnUri", "spawnParentUri", "thumbnailUri"
-];
-
 const LINK_ENDPOINT_VERSION = 2;
+
+app.use((req, res, next) => {
+	let trust = req.app.get('trust proxy fn'),
+		host = req.get('X-Forwarded-Host');
+	if (!host || !trust(req.connection.remoteAddress, 0))
+		host = req.get('Host');
+	else if (host.indexOf(',') !== -1)
+		host = host.substring(0, host.indexOf(',')).trimRight();
+
+	req.realHost = host;
+	req.fullBaseUrl = `${req.protocol}://${req.realHost}${req.baseUrl}`;
+	next();
+});
 
 function validateRequest(req) {
 	let errors = validationResult(req);
@@ -56,7 +63,7 @@ app.get("/search.:format", [
 	if(v === undefined)
 		v = 0;
 
-	let baseUrl = `${req.protocol}://${req.get("host")}${req.baseUrl}`;
+	let baseUrl = req.fullBaseUrl;
 
 	let fulltextQuery;
 	if(q !== "")
@@ -108,62 +115,60 @@ app.get("/search.:format", [
 				rec.spawnParentUri = null;
 		}
 
-		if(format === "json")
-			return res.json({
-				total,
-				hits: hits.map(h => _.pick(h, JSON_FIELDS))
-			});
+		sendHits(res, format, v, total, hits);
+	}).catch(next);
+});
 
-		hits.push({}); // terminator
+app.get("/search-guillefix.:format", [
+	param("format").isIn(["animx","animj","json"]),
+	query("q").trim().optional(),
+	query("f").isFloat().toFloat().optional(),
+	query("t").isFloat().toFloat().optional(),
+	query("i").isFloat().toFloat().optional(),
+	query("size").isInt({ min: 1, max: 200 }).toInt().optional(),
+	query("from").isInt({ min: 0 }).toInt().optional(),
+	query("v").isInt({ min: -(2**31), max: (2**31)-1 }).toInt().optional()
+], (req, res, next) => {
+	let { format, q, f, t, i, size, from, v } = matchedData(req);
+	if(!validateRequest(req))
+		return;
 
-		let animjTracks = [
-			{
-				trackType: "Discrete",
-				valueType: "int",
-				data: {
-					node: "_meta",
-					property: "v",
-					keyframes: [
-						{ time: 0, value: v }
-					]
-				}
-			},
-			{
-				trackType: "Discrete",
-				valueType: "int",
-				data: {
-					node: "_meta",
-					property: "total",
-					keyframes: [
-						{ time: 0, value: total }
-					]
-				}
-			},
-			...ANIMJ_FIELDS.map(f => {
-				return {
-					trackType: "Discrete",
-					valueType: "string",
-					data: {
-						node: "hits",
-						property: f,
-						keyframes: _.map(hits, (h, time) => ({
-							time, value: h[f] || null
-						}))
-					}
-				}
-			})
-		];
+	if(size === undefined)
+		size = 10;
+	if(from === undefined)
+		from = 0;
+	if(v === undefined)
+		v = 0;
 
-		let animj = {
-			name: "response",
-			globalDuration: Math.max(hits.length, 1),
-			tracks: animjTracks
-		};
+	ax(process.env.GUILLEFIX_ENDPOINT, {
+		params: {
+			q, f, t, i
+		}
+	}).then(({ data }) => {
+		let hits = [];
+		for(let s of data.trim().split("|,")) {
+			let parts = s.split("|");
+			if(parts.length !== 5)
+				continue;
+			let rec = {
+				thumbnailUri: parts[0],
+				assetUri: parts[1],
+				name: parts[2],
+				ownerName: parts[3],
+				path: parts[4]
+			};
 
-		if(format === "animj")
-			return res.json(animj);
+			rec.type = "object";
+			rec.spawnUri = rec.assetUri;
+			rec.spawnParentUri = null;
 
-		res.send(writeAnimX(animj));
+			hits.push(rec);
+		}
+
+		let total = hits.length;
+		hits = hits.slice(from, size);
+
+		sendHits(res, format, v, total, hits);
 	}).catch(next);
 });
 
@@ -262,11 +267,10 @@ app.use((err, req, res, next) => {
 	res.status(500).json({ message: err.message });
 });
 
-const port = process.env.PORT || 8002;
-app.listen(port, (err) => {
+app.listen(app.get("port"), (err) => {
 	if(err) {
 		console.log(`app.listen failed: ${err.message || err}`);
 		return;
 	}
-	console.log(`app.listen ${port}`);
+	console.log(`app.listen ${app.get("port")}`);
 });
