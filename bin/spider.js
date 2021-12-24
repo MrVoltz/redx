@@ -108,7 +108,7 @@ function indexWorldRecord(rec) {
 function loop() {
 	return Promise.resolve(db.getSomePendingRecords(BATCH_SIZE)).tap(records => {
 		if(!records.length)
-			throw "Done!";
+			throw "break";
 	}).map(rec => {
 		return Promise.try(() => {
 			console.log(`processPendingRecord ${recordToString(rec)}`);
@@ -127,7 +127,10 @@ function loop() {
 				// sleepAsync(500)
 			);
 		});
-	}, { concurrency: CONCURRENCY }).then(loop);
+	}, { concurrency: CONCURRENCY }).then(loop).catch(err => {
+		if(err !== "break")
+			throw err;
+	});
 }
 
 function rescan() {
@@ -156,10 +159,41 @@ function rescan() {
 	});
 }
 
+function propagateIsDeleted() {
+	return db.searchRecords({
+		term: { isDeleted: true }
+	}, db.MAX_SIZE).then(({ hits: deletedRecords }) => {
+		console.log(`propagateIsDeleted ${deletedRecords.length} deleted records`);
+		let deletedRecordsByUri = new Set;
+		for(let rec of deletedRecords)
+			deletedRecordsByUri.add(cloudx.getRecordUri(rec));
+
+		let count = 0;
+		return Promise.map(deletedRecords, rec => {
+			if(rec.recordType !== "directory")
+				return;
+
+			return Promise.map(db.searchRecords(db.buildChildrenQuery(rec)).then(res => res.hits), child => {
+				let uri = cloudx.getRecordUri(child);
+				if(deletedRecordsByUri.has(uri))
+					return;
+
+				count++;
+				console.log(`propagateIsDeleted ${recordToString(child)} should also be deleted`);
+				return setRecordDeleted(child);
+			});
+		}, { concurrency: CONCURRENCY }).then(() => count);
+	}).then((count) => {
+		if(count)
+			return propagateIsDeleted();
+	});
+}
+
 const roots = require("../data/roots");
 maybeFetchAndIndexPendingRecordUris(roots, CONCURRENCY).then(() => {
 	if(process.argv[2] === "rescan")
 		return rescan();
-}).then(() => {
-	return loop();
+}).then(loop).then(propagateIsDeleted).then(() => {
+	console.log("done");
+	process.exit(0);
 });
