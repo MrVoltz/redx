@@ -47,8 +47,9 @@ function indexDirectoryRecord(rec) {
 			Promise.map(localPendingChildren, child => {
 				if(apiChildrenById.has(child.id))
 					return;
+
 				console.log(`indexDirectoryRecord ${recordToString(rec)} removed pending child ${recordToString(child)}`);
-				return db.deletePendingRecord(child.ownerId, child.id);
+				return deletePendingRecord(child);
 			}),
 		);
 	}).then(() => {
@@ -105,11 +106,34 @@ function indexWorldRecord(rec) {
 	});
 }
 
+function deletePendingRecord(rec) {
+	let uri = cloudx.getRecordUri(rec);
+	if(deletedPendingRecordsThisLoop.has(uri)) {
+		console.log(`deletePendingRecord ${recordToString(rec)} already deleted`);
+		return Promise.resolve(false);
+	}
+	deletedPendingRecordsThisLoop.add(uri);
+	return db.deletePendingRecord(rec.ownerId, rec.id).then(() => true);
+}
+
+var deletedPendingRecordsThisLoop;
 function loop() {
-	return Promise.resolve(db.getSomePendingRecords(BATCH_SIZE)).tap(records => {
+	return Promise.resolve(db.getSomePendingRecords(BATCH_SIZE)).then(records => {
 		if(!records.length)
 			throw "break";
+
+		deletedPendingRecordsThisLoop = new Set;
+
+		// deduplicate records to prevent elastic race condition
+		let recordsByUri = indexBy(records, rec => cloudx.getRecordUri(rec));
+		return recordsByUri.values();
 	}).map(rec => {
+		let uri = cloudx.getRecordUri(rec);
+		if(deletedPendingRecordsThisLoop.has(uri)) {
+			console.log(`processPendingRecord ${recordToString(rec)} skipped already deleted pending record`);
+			return;
+		}
+
 		return Promise.try(() => {
 			console.log(`processPendingRecord ${recordToString(rec)}`);
 			if(rec.recordType === "directory")
@@ -122,10 +146,7 @@ function loop() {
 				return indexWorldRecord(rec);
 			return maybeIndexRecord(rec);
 		}).then(() => {
-			return Promise.join(
-				db.deletePendingRecord(rec.ownerId, rec.id)
-				// sleepAsync(500)
-			);
+			return deletePendingRecord(rec);
 		});
 	}, { concurrency: CONCURRENCY }).then(loop).catch(err => {
 		if(err !== "break")
@@ -149,8 +170,10 @@ function rescan() {
 
 		let count = 0;
 		return Promise.map(records, rec => {
-			if(pendingRecordsByUri.has(cloudx.getRecordUri(rec)))
+			let uri = cloudx.getRecordUri(rec);
+			if(pendingRecordsByUri.has(uri))
 				return;
+			pendingRecordsByUri.add(uri); // prevent adding more dupes
 			count++;
 			return db.indexPendingRecord(rec);
 		}, { concurrency: CONCURRENCY }).then(() => count);
