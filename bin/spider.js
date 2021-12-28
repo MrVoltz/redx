@@ -219,4 +219,7 @@ maybeFetchAndIndexPendingRecordUris(roots, CONCURRENCY).then(() => {
 }).then(loop).then(propagateIsDeleted).then(() => {
 	console.log("done");
 	process.exit(0);
+}).catch(err => {
+	console.error(err.stack || err);
+	process.exit(1);
 });
