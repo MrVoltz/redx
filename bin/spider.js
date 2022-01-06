@@ -157,7 +157,12 @@ function loop() {
 function rescan() {
 	return Promise.join(
 		db.searchRecords({
-			term: { recordType: "directory" }
+			bool: {
+				filter: [
+					{ term: { recordType: "directory" }},
+					{ term: { isDeleted: false }},
+				]
+			}
 		}, db.MAX_SIZE).then(res => res.hits),
 		db.searchPendingRecords({
 			term: { recordType: "directory" }
