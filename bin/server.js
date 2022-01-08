@@ -96,7 +96,8 @@ app.get("/search.:format", [
 		bool: {
 			must: fulltextQuery ? [ fulltextQuery ] : [],
 			should: typeQueries,
-			minimum_should_match: typeQueries.length ? 1 : 0
+			minimum_should_match: typeQueries.length ? 1 : 0,
+			filter: { term: { isDeleted: false }}
 		}
 	}, size, from).then(({ total, hits }) => {
 		for(let rec of hits) {
