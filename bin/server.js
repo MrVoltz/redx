@@ -2,13 +2,14 @@ require("dotenv").config();
 
 const express = require("express"),
 	_ = require("underscore"),
+	Promise = require("bluebird"),
 	{ param, query, matchedData, validationResult } = require("express-validator");
 
 const makeInventoryLink = require("../data/inventorylink"),
 	{ writePackedObject } = require("../lib/objectloader"),
 	{ parseUri, getRecordUri, getRecordIdType } = require("../lib/cloudx"),
 	{ searchRecords, getRecord } = require("../lib/db"),
-	{ sendHits } = require("../lib/server-utils"),
+	{ sendHits, buildFulltextQuery, processLocalHits } = require("../lib/server-utils"),
 	{ ax } = require("../lib/utils");
 
 const app = express();
@@ -17,8 +18,6 @@ app.set("json spaces", 2);
 
 app.set("port", process.env.PORT || 8002);
 app.set("trust proxy", "loopback");
-
-const LINK_ENDPOINT_VERSION = 2;
 
 app.use((req, res, next) => {
 	let trust = req.app.get('trust proxy fn'),
@@ -65,18 +64,7 @@ app.get("/search.:format", [
 
 	let baseUrl = req.fullBaseUrl;
 
-	let fulltextQuery;
-	if(q !== "")
-		fulltextQuery = {
-			dis_max: {
-				queries: [
-					{ match: { simpleName: { query: String(q), fuzziness: "AUTO", boost: 2 }}},
-					{ match: { ownerPathNameSearchable: { query: String(q), fuzziness: "AUTO", boost: 2 } }},
-					{ match: { tagsSearchable: { query: String(q), fuzziness: "AUTO", boost: 1 } }}
-				],
-				tie_breaker: 0.7
-			}
-		};
+	let fulltextQuery = buildFulltextQuery(q);
 
 	let recordTypes = [], objectTypes = [];
 	for(let t of type) {
@@ -94,28 +82,13 @@ app.get("/search.:format", [
 
 	searchRecords({
 		bool: {
-			must: fulltextQuery ? [ fulltextQuery ] : [],
+			must: fulltextQuery || [],
 			should: typeQueries,
 			minimum_should_match: typeQueries.length ? 1 : 0,
 			filter: { term: { isDeleted: false }}
 		}
 	}, size, from).then(({ total, hits }) => {
-		for(let rec of hits) {
-			rec.type = rec.recordType === "object" ? rec.objectType : rec.recordType;
-			if(rec.recordType === "directory")
-				rec.spawnUri = `${baseUrl}/link.bson?target=${encodeURIComponent(getRecordUri(rec))}&targetName=${encodeURIComponent(rec.name)}&v=${encodeURIComponent(LINK_ENDPOINT_VERSION)}`;
-			else if(rec.recordType === "link")
-				rec.spawnUri = `${baseUrl}/link.bson?target=${encodeURIComponent(rec.assetUri)}&targetName=${encodeURIComponent(rec.name)}&v=${encodeURIComponent(LINK_ENDPOINT_VERSION)}`;
-			else if(rec.recordType === "object")
-				rec.spawnUri = rec.assetUri;
-			else
-				rec.spawnUri = null;
-			if(rec.recordType !== "world")
-				rec.spawnParentUri = `${baseUrl}/parent-link.bson?ownerId=${encodeURIComponent(rec.ownerId)}&id=${encodeURIComponent(rec.id)}&v=${encodeURIComponent(LINK_ENDPOINT_VERSION)}`;
-			else
-				rec.spawnParentUri = null;
-		}
-
+		processLocalHits(hits, baseUrl);
 		sendHits(res, format, v, total, hits);
 	}).catch(next);
 });
@@ -138,10 +111,27 @@ app.get("/search-guillefix.:format", [
 		size = 10;
 	if(from === undefined)
 		from = 0;
+	if(q === undefined)
+		q = "";
 	if(v === undefined)
 		v = 0;
 
-	ax(process.env.GUILLEFIX_ENDPOINT, {
+	let fulltextQuery = buildFulltextQuery(q);
+
+	var localHits = searchRecords({
+		bool: {
+			must: fulltextQuery || [],
+			filter: [
+				{ term: { recordType: "object" }},
+				{ term: { isDeleted: false }}
+			]
+		}
+	}, size, from).then(({ total, hits }) => {
+		processLocalHits(hits);
+		return { total, hits };
+	});
+
+	var guillefixHits = ax(process.env.GUILLEFIX_ENDPOINT, {
 		params: {
 			q, f, t, i
 		}
@@ -168,6 +158,18 @@ app.get("/search-guillefix.:format", [
 
 		let total = hits.length;
 		hits = hits.slice(from, size);
+
+		return { total, hits };
+	}).catch(err => {
+		console.log(`guillefix endpoint error: ${err.stack || err}`);
+		return null;
+	});
+
+	Promise.join(
+		localHits,
+		guillefixHits
+	).spread((localHits, guillefixHits) => {
+		let { total, hits } = guillefixHits || localHits;
 
 		sendHits(res, format, v, total, hits);
 	}).catch(next);
