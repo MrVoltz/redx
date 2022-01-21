@@ -62,8 +62,6 @@ app.get("/search.:format", [
 	if(v === undefined)
 		v = 0;
 
-	let baseUrl = req.fullBaseUrl;
-
 	let fulltextQuery = buildFulltextQuery(q);
 
 	let recordTypes = [], objectTypes = [];
@@ -88,7 +86,7 @@ app.get("/search.:format", [
 			filter: { term: { isDeleted: false }}
 		}
 	}, size, from).then(({ total, hits }) => {
-		processLocalHits(hits, baseUrl);
+		processLocalHits(hits, req.fullBaseUrl);
 		sendHits(res, format, v, total, hits);
 	}).catch(next);
 });
@@ -127,7 +125,7 @@ app.get("/search-guillefix.:format", [
 			]
 		}
 	}, size, from).then(({ total, hits }) => {
-		processLocalHits(hits);
+		processLocalHits(hits, req.fullBaseUrl);
 		return { total, hits };
 	});
 
@@ -165,10 +163,7 @@ app.get("/search-guillefix.:format", [
 		return null;
 	});
 
-	Promise.join(
-		localHits,
-		guillefixHits
-	).spread((localHits, guillefixHits) => {
+	Promise.join(localHits, guillefixHits).spread((localHits, guillefixHits) => {
 		let { total, hits } = guillefixHits || localHits;
 
 		sendHits(res, format, v, total, hits);
