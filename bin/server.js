@@ -10,7 +10,7 @@ const makeInventoryLink = require("../data/inventorylink"),
 	{ parseUri, getRecordUri, getRecordIdType } = require("../lib/cloudx"),
 	{ searchRecords, getRecord } = require("../lib/db"),
 	{ sendHits, buildFulltextQuery, processLocalHits } = require("../lib/server-utils"),
-	{ searchRecordsGuillefix } = require("../lib/guillefix");
+	guillefix = require("../lib/guillefix");
 
 const app = express();
 
@@ -85,7 +85,7 @@ app.get("/search.:format", [
 		if(image_weight === 0 || q === "")
 			return { hits: [], total: 0 };
 
-		return searchRecordsGuillefix({
+		return guillefix.searchRecordsCached({
 			f: "1e-9", // fuzzy
 			t: "0", // text
 			i: "1", // image
@@ -149,33 +149,11 @@ app.get("/search-guillefix.:format", [
 		return { total, hits };
 	});
 
-	var guillefixHits = ax(process.env.GUILLEFIX_ENDPOINT, {
-		params: {
-			q, f, t, i
-		}
-	}).then(({ data }) => {
-		let hits = [];
-		for(let s of data.trim().split("|,")) {
-			let parts = s.split("|");
-			if(parts.length !== 5)
-				continue;
-			let rec = {
-				thumbnailUri: parts[0],
-				assetUri: parts[1],
-				name: parts[2],
-				ownerName: parts[3],
-				path: parts[4]
-			};
-
-			rec.type = "object";
+	var guillefixHits = guillefix.searchRecordsCached({ q, f, t, i }, size, from).then(({ hits, total }) => {
+		for(let rec of hits) {
 			rec.spawnUri = rec.assetUri;
 			rec.spawnParentUri = null;
-
-			hits.push(rec);
 		}
-
-		let total = hits.length;
-		hits = hits.slice(from, size);
 
 		return { total, hits };
 	}).catch(err => {

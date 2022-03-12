@@ -26,6 +26,7 @@
     "dotenv": "^10.0.0",
     "express": "^4.17.1",
     "express-validator": "^6.13.0",
+    "lru-cache": "^7.4.4",
     "lz4": "^0.6.5",
     "lzma-native": "^8.0.1",
     "through2": "^4.0.2",
