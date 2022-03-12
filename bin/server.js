@@ -32,7 +32,11 @@ app.use((req, res, next) => {
 	next();
 });
 
-app.use(express.static(__dirname + "/../frontend"));
+// Frontend
+app.use(express.static(__dirname + "/../redx-frontend/build"));
+app.get("/", (req, res, next) => {
+	res.sendFile(__dirname + "/../redx-frontend/build/index.html");
+});
 
 function validateRequest(req) {
 	let errors = validationResult(req);

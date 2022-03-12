@@ -61,7 +61,7 @@ function AppSidebar({ state, dispatch }) {
 						/>
 					</Col>
 				</Row>
-				<div className="AppSidebar-powered-by">(uses AI service by <a target="_blank" href="https://github.com/guillefix/">guillefix</a>)</div>
+				<div className="AppSidebar-powered-by">(uses AI service by <a target="_blank" rel="noreferrer" href="https://github.com/guillefix/">guillefix</a>)</div>
 			</Space>
 		</>
 	);
@@ -71,7 +71,7 @@ function fetchRecords(q, types, from, size, imageWeight) {
 	if (size === 0)
 		return Promise.resolve({ total: 0, hits: [] });
 
-	let params = new URLSearchParams;
+	let params = new URLSearchParams();
 	params.append("q", q);
 	for (let type of types)
 		params.append("type", type);
@@ -87,16 +87,16 @@ function fetchRecords(q, types, from, size, imageWeight) {
 function App() {
 	let [state, dispatch] = useStore();
 
-	function handlePopState(e) {
-		console.log(e);
-	}
+	// function handlePopState(e) {
+	// 	console.log(e);
+	// }
 
-	useEffect(() => {
-		window.addEventListener("popstate", handlePopState);
-		return () => {
-			window.removeEventListener("popstate", handlePopState);
-		};
-	}, [handlePopState]);
+	// useEffect(() => {
+	// 	window.addEventListener("popstate", handlePopState);
+	// 	return () => {
+	// 		window.removeEventListener("popstate", handlePopState);
+	// 	};
+	// }, [handlePopState]);
 
 	const debouncedFetchRecords = useConstant(() => AwesomeDebouncePromise(fetchRecords, 300));
 	const asyncHits = useAsync(debouncedFetchRecords, [state.q, state.types, state.from, state.size, state.imageEnabled ? state.imageWeight : 0]);

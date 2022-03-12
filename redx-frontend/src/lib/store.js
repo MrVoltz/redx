@@ -27,6 +27,8 @@ function reducer(state, { type, payload }) {
 			return { ...state, imageEnabled: payload };
 		case "setImageWeight":
 			return { ...state, imageWeight: payload };
+		default:
+			throw new Error("Unknown action: " + type);
 	}
 }
 

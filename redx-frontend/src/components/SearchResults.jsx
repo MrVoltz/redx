@@ -1,17 +1,17 @@
-import { Button, Col, Drawer, Empty, message, Pagination, Row, Tooltip } from "antd";
 import { CopyOutlined, FolderOutlined, FrownOutlined, InfoCircleOutlined } from '@ant-design/icons';
-import { useCallback, useRef, useState } from "react";
+import { Button, Drawer, Empty, Pagination, Row, Tooltip } from "antd";
 import classNames from "classnames";
-import "./SearchResults.css";
-import { resolveThumbnailUri, stripRichText, useCopyHelper } from "../lib/utils";
+import { useCallback, useState } from "react";
 import { typeOptions } from "../lib/constants";
+import { resolveThumbnailUri, stripRichText, useCopyHelper } from "../lib/utils";
+import "./SearchResults.css";
 
-function RecordThumbnail({ thumbnailUri }) {
+function RecordThumbnail({ thumbnailUri, name }) {
 	let [error, setError] = useState(false);
 
 	return error ? <FrownOutlined className="Record-icon" style={{ fontSize: 32 }} /> : (
 		<div className="Record-thumbnail">
-			<img src={resolveThumbnailUri(thumbnailUri)} onError={e => setError(true)} />
+			<img src={resolveThumbnailUri(thumbnailUri)} alt={stripRichText(name)} onError={e => setError(true)} />
 		</div>
 	);
 }
@@ -24,7 +24,7 @@ function Record({ record, onShowRecordInfoClick }) {
 	let className = ["Record", "--record-type-" + record.recordType, "--type-" + record.type].join(" ");
 
 	return (<div className={className} title={stripRichText(record.name)}>
-		{record.thumbnailUri && <RecordThumbnail thumbnailUri={record.thumbnailUri} />}
+		{record.thumbnailUri && <RecordThumbnail name={record.name} thumbnailUri={record.thumbnailUri} />}
 		{record.type === "directory" && <FolderOutlined className="Record-icon" style={{ fontSize: 32 }} />}
 		<div className="Record-name">{stripRichText(record.name)}</div>
 		<div className="Record-actions --right">
@@ -73,7 +73,7 @@ function RecordInfo({ record }) {
 				</>
 			} content={pathItems} />
 			{record.thumbnailUri && <RecordInfoItem title="Thumbnail" content={
-				<RecordThumbnail thumbnailUri={record.thumbnailUri} />
+				<RecordThumbnail name={record.name} thumbnailUri={record.thumbnailUri} />
 			} />}
 			{copyHelper}
 		</div>
