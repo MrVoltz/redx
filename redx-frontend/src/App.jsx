@@ -1,62 +1,13 @@
-import { Checkbox, Col, Divider, Input, InputNumber, PageHeader, Pagination, Row, Slider, Space, Spin } from 'antd';
+import { Checkbox, Col, Divider, Input, InputNumber, Row, Slider, Space, Spin } from 'antd';
 import AwesomeDebouncePromise from 'awesome-debounce-promise';
 import axios from 'axios';
-import React, { useCallback, useReducer } from 'react';
+import React, { useEffect } from 'react';
 import { useAsync } from 'react-async-hook';
 import './App.css';
 import SearchResults from './components/SearchResults';
-import useConstant from './utils';
-
-const typeOptions = [
-	{ label: "Directory", value: "directory", spaceAfter: true, default: false },
-
-	{ label: "Avatar", value: "common_avatar" },
-	{ label: "Model", value: "model" },
-	{ label: "Tooltip", value: "common_tooltip" },
-	{ label: "Facet", value: "facet" },
-	{ label: "VirtualKeyboard", value: "virtual_keyboard" },
-	{ label: "OtherUIX", value: "uix" },
-	{ label: "WorldOrb", value: "world_orb" },
-	{ label: "Uncategorized", value: "other", spaceAfter: true },
-
-	{ label: "Material", value: "material" },
-	{ label: "Texture", value: "texture" },
-	{ label: "Video", value: "video" },
-	{ label: "Audio", value: "audio" },
-	{ label: "Text", value: "text" },
-	{ label: "Binary", value: "binary", tooltip: "Executables, archives..." },
-];
-
-const version = "0.0.1";
-
-const initialState = {
-	q: "",
-	types: typeOptions.filter(o => o.default === undefined || o.default).map(o => o.value),
-	from: 0,
-	size: 50,
-	imageEnabled: false,
-	imageWeight: 0.5
-};
-
-function reducer(state, { type, payload }) {
-	switch (type) {
-		case "search":
-			return { ...state, from: 0, q: payload };
-		case "paginate":
-			return { ...state, from: payload.from, size: payload.size };
-		case "setTypes":
-			return { ...state, types: payload };
-		case "toggleType":
-			let newTypes = state.types.filter(t => t !== payload.type);
-			if (payload.checked)
-				newTypes.push(payload.type);
-			return { ...state, types: newTypes };
-		case "setImageEnabled":
-			return { ...state, imageEnabled: payload };
-		case "setImageWeight":
-			return { ...state, imageWeight: payload };
-	}
-}
+import { typeOptions } from './lib/constants';
+import useStore from './lib/store';
+import { useConstant } from './lib/utils';
 
 function AppSidebar({ state, dispatch }) {
 	let allTypesActive = typeOptions.length === state.types.length,
@@ -110,7 +61,7 @@ function AppSidebar({ state, dispatch }) {
 						/>
 					</Col>
 				</Row>
-				<div class="AppSidebar-powered-by">(uses AI service by <a target="_blank" href="https://github.com/guillefix/">guillefix</a>)</div>
+				<div className="AppSidebar-powered-by">(uses AI service by <a target="_blank" href="https://github.com/guillefix/">guillefix</a>)</div>
 			</Space>
 		</>
 	);
@@ -134,18 +85,27 @@ function fetchRecords(q, types, from, size, imageWeight) {
 }
 
 function App() {
-	let [state, dispatch] = useReducer(reducer, initialState);
+	let [state, dispatch] = useStore();
 
-	console.log(state);
+	function handlePopState(e) {
+		console.log(e);
+	}
 
-	const debouncedFetchRecords = useConstant(() => AwesomeDebouncePromise(fetchRecords, 500));
+	useEffect(() => {
+		window.addEventListener("popstate", handlePopState);
+		return () => {
+			window.removeEventListener("popstate", handlePopState);
+		};
+	}, [handlePopState]);
+
+	const debouncedFetchRecords = useConstant(() => AwesomeDebouncePromise(fetchRecords, 300));
 	const asyncHits = useAsync(debouncedFetchRecords, [state.q, state.types, state.from, state.size, state.imageEnabled ? state.imageWeight : 0]);
 
 	return (
 		<div className="App">
 			<div className="App-main">
 				<div className="App-sidebar">
-					<h1 style={{ fontSize: "1.8em" }}>RedX <small>v{version}</small></h1>
+					<h1 style={{ fontSize: "1.8em" }}>RedXWeb</h1>
 					<AppSidebar state={state} dispatch={dispatch} />
 				</div>
 				<div className="App-content">
@@ -153,7 +113,9 @@ function App() {
 						<Input.Search size="large" value={state.q} onChange={e => dispatch({ type: "search", payload: e.target.value })} />
 					</div>
 
-					{asyncHits.loading && <Spin />}
+					{asyncHits.loading && <Row justify='center' className='App-loading'>
+						<Spin size='large'/>
+					</Row>}
 					{asyncHits.result && <SearchResults
 						res={asyncHits.result}
 						pagination={{ from: state.from, size: state.size }}

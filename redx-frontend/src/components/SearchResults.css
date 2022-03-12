@@ -2,10 +2,23 @@
 .SearchResults.--empty{margin: 15px 0}
 .SearchResults-hits{margin-bottom: 10px;display: grid;grid-template-columns: repeat(auto-fit, 120px);grid-auto-rows: 1fr;gap: 5px;}
 .SearchResults-hits-col{display: flex;align-items: stretch;}
+.SearchResults-copyInput{position: absolute;left: -9999px;}
 
-.Record{background: #eee;display: flex;flex-direction: column;padding: 5px;flex: 1;min-width: 0;}
+.Record{background: #eee;display: flex;flex-direction: column;padding: 5px;flex: 1;min-width: 0;position: relative;}
 .Record.--record-type-directory{background: #ffefa6}
 .Record-icon{flex: 1;display: flex;align-items: center;justify-content: center;}
 .Record-thumbnail{flex: 1;display: flex;align-items: center;}
 .Record img{width: 100%;height: 96px;object-fit: contain;object-position: center;}
 .Record-name {text-align: center;text-overflow: ellipsis;white-space: nowrap;overflow: hidden;width: 100%;margin-top: 2px;}
+.Record-actions{position: absolute;top: 0;}
+.Record-actions.--right{right: 0}
+.Record-actions.--left{left: 0}
+.Record-actions button {appearance: none;border: 0;background: rgb(238 238 238 / 50%);padding: 2px 4px;cursor: pointer;}
+
+.RecordInfoItem{margin-bottom: 5px;}
+.RecordInfoItem-title{font-weight: bold;}
+.RecordInfoItem-title span{font-weight: normal;}
+.RecordInfoItem .Record-thumbnail{margin: 5px}
+.RecordInfoItem .Record-thumbnail img{max-width: 100%;}
+.RecordInfoItem.--path .RecordInfoItem-content{display: flex;flex-flow: row wrap;gap: 5px;}
+.RecordInfoItem.--path .RecordInfoItem-content button{white-space: normal;height: auto;}
