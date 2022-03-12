@@ -1,0 +1,7 @@
+.App {padding: 15px;}
+.App-sidebar {padding: 0 15px 0 0;width: 200px;}
+.App-sidebar .ant-space{display: flex;}
+.AppSidebar-powered-by{font-size: 0.9em;text-align: center;}
+.App-content {flex: 1;}
+.App-main {display: flex;}
+.App-search{margin-bottom: 10px;}
