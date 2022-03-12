@@ -10,7 +10,7 @@ const makeInventoryLink = require("../data/inventorylink"),
 	{ parseUri, getRecordUri, getRecordIdType } = require("../lib/cloudx"),
 	{ searchRecords, getRecord } = require("../lib/db"),
 	{ sendHits, buildFulltextQuery, processLocalHits } = require("../lib/server-utils"),
-	{ ax } = require("../lib/utils");
+	{ searchRecordsGuillefix } = require("../lib/guillefix");
 
 const app = express();
 
@@ -32,6 +32,8 @@ app.use((req, res, next) => {
 	next();
 });
 
+app.use(express.static(__dirname + "/../frontend"));
+
 function validateRequest(req) {
 	let errors = validationResult(req);
 	if(!errors.isEmpty()) {
@@ -45,14 +47,17 @@ app.get("/search.:format", [
 	param("format").isIn(["animx","animj","json"]),
 	query("type").toArray(),
 	query("q").trim().optional(),
+	query("image_weight").isFloat({ min: 0, max: 1 }).toFloat().optional(),
 	query("size").isInt({ min: 1, max: 200 }).toInt().optional(),
 	query("from").isInt({ min: 0 }).toInt().optional(),
 	query("v").isInt({ min: -(2**31), max: (2**31)-1 }).toInt().optional()
 ], (req, res, next) => {
-	let { format, type, q, size, from, v } = matchedData(req);
+	let { format, type, q, size, from, v, image_weight } = matchedData(req);
 	if(!validateRequest(req))
 		return;
 
+	if(image_weight === undefined)
+		image_weight = 0;
 	if(size === undefined)
 		size = 10;
 	if(from === undefined)
@@ -61,8 +66,6 @@ app.get("/search.:format", [
 		q = "";
 	if(v === undefined)
 		v = 0;
-
-	let fulltextQuery = buildFulltextQuery(q);
 
 	let recordTypes = [], objectTypes = [];
 	for(let t of type) {
@@ -78,14 +81,31 @@ app.get("/search.:format", [
 	if(objectTypes.length)
 		typeQueries.push({ terms: { objectType: objectTypes }});
 
-	searchRecords({
-		bool: {
-			must: fulltextQuery || [],
-			should: typeQueries,
-			minimum_should_match: typeQueries.length ? 1 : 0,
-			filter: { term: { isDeleted: false }}
-		}
-	}, size, from).then(({ total, hits }) => {
+	Promise.try(() => {
+		if(image_weight === 0 || q === "")
+			return { hits: [], total: 0 };
+
+		return searchRecordsGuillefix({
+			f: "1e-9", // fuzzy
+			t: "0", // text
+			i: "1", // image
+			q
+		}).catch(err => {
+			console.log(`guillefix endpoint error: ${err.stack || err}`);
+			return { hits: [], total: 0 };
+		});
+	}).then(({ hits: imageSearchHits }) => {
+		let fulltextQuery = buildFulltextQuery(q, imageSearchHits, image_weight);
+
+		return searchRecords({
+			bool: {
+				must: fulltextQuery || [],
+				should: typeQueries,
+				minimum_should_match: typeQueries.length ? 1 : 0,
+				filter: { term: { isDeleted: false }}
+			}
+		}, size, from);
+	}).then(({ total, hits }) => {
 		processLocalHits(hits, req.fullBaseUrl);
 		sendHits(res, format, v, total, hits);
 	}).catch(next);
@@ -199,7 +219,7 @@ app.get("/link.bson", [
 app.get("/parent-link.bson", [
 	query("ownerId").trim().custom(isOwnerId),
 	query("id").trim().custom(isRecordId),
-	query("depth").isInt({ min: 0 }).toInt().optional()
+	query("depth").isInt({ min: 0 }).toInt().optional(),
 ], (req, res, next) => {
 	let { ownerId, id, depth } = matchedData(req);
 	if(!validateRequest(req))
@@ -254,6 +274,16 @@ app.get("/parent-link.bson", [
 			throw err;
 		res.status(404).json({ message: "Record not found" });
 	}).catch(next);
+});
+
+app.get("/browse.:format", [
+	query("ownerId").trim().custom(isOwnerId),
+	query("id").trim().custom(isRecordId),
+	query("size").isInt({ min: 1, max: 200 }).toInt().optional(),
+	query("from").isInt({ min: 0 }).toInt().optional(),
+	query("v").isInt({ min: -(2**31), max: (2**31)-1 }).toInt().optional()
+], (req, res, next) => {
+
 });
 
 app.use((req, res, next) => {
