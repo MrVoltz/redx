@@ -1,0 +1,7 @@
+{
+  "allowJs": true,
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node"
+  }
+}

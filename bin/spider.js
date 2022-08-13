@@ -1,16 +1,18 @@
 require("dotenv").config();
 
-const Promise = require("bluebird"),
-	fsPromises = require("fs/promises"),
-	fs = require("fs"),
-	path = require("path"),
-	_ = require("underscore");
+const Promise = require("bluebird");
+const fsPromises = require("fs/promises");
+const fs = require("fs");
+const path = require("path");
+const _ = require("underscore");
 
-const cloudx = require("../lib/cloudx"),
-	db = require("../lib/db"),
-	{ describeRecord, describeObject, describeWorld } = require("../lib/objectdescriber"),
-	{ recordToString, readRemotePackedObject, isRecordNewer, maybeIndexRecord, maybeIndexPendingRecord, maybeFetchAndIndexPendingRecordUri, maybeFetchAndIndexPendingRecordUris, setRecordDeleted } = require("../lib/spider-utils"),
-	{ indexBy } = require("../lib/utils");
+const cloudx = require("../lib/cloudx");
+const db = require("../lib/db");
+const { describeRecord, describeObject, describeWorld } = require("../lib/objectdescriber");
+const { recordToString, readRemotePackedObject, isRecordNewer, maybeIndexRecord, maybeIndexPendingRecord, maybeFetchAndIndexPendingRecordUri, maybeFetchAndIndexPendingRecordUris, setRecordDeleted } = require("../lib/spider-utils");
+const { indexBy } = require("../lib/utils");
+const { isRecordIgnored } = require("../lib/ignorelist-utils");
+const roots = require("../data/roots");
 
 const CONCURRENCY = 2,
 	BATCH_SIZE = 16;
@@ -19,7 +21,33 @@ function sleepAsync(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function handleIgnoredDirectoryRecord(rec) {
+	return Promise.all([
+		db.searchRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
+		db.searchPendingRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
+	]).spread((localChildren, localPendingChildren) => {
+		return Promise.all([
+			Promise.map(localChildren, child => {
+				console.log(`indexDirectoryRecord ${recordToString(rec)} ignored removed child ${recordToString(child)}`);
+				return setRecordDeleted(child);
+			}),
+			Promise.map(localPendingChildren, child => {
+				console.log(`indexDirectoryRecord ${recordToString(rec)} ignored removed pending child ${recordToString(child)}`);
+				return deletePendingRecord(child);
+			})
+		]);
+	}).then(() => {
+		return setRecordDeleted(rec);
+	});
+}
+
 function indexDirectoryRecord(rec) {
+	if(isRecordIgnored(rec)) {
+		// delete all indexed children and then itself
+		console.log(`indexDirectoryRecord ${recordToString(rec)} ignored`);
+		return handleIgnoredDirectoryRecord(rec);
+	}
+
 	return Promise.join(
 		cloudx.fetchDirectoryChildren(rec),
 		db.searchRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
@@ -34,6 +62,8 @@ function indexDirectoryRecord(rec) {
 				if(localPendingChildrenById.has(child.id))
 					return;
 				if(localChildrenById.has(child.id) && !isRecordNewer(child, localChildrenById.get(child.id)))
+					return;
+				if(isRecordIgnored(child))
 					return;
 				console.log(`indexDirectoryRecord ${recordToString(rec)} added/updated child ${recordToString(child)}`);
 				return db.indexPendingRecord(child);
@@ -58,12 +88,18 @@ function indexDirectoryRecord(rec) {
 }
 
 function indexLinkRecord(rec) {
+	if(isRecordIgnored(rec))
+		return setRecordDeleted(rec);
+
 	return maybeFetchAndIndexPendingRecordUri(rec.assetUri).then(() => {
 		return maybeIndexRecord(rec);
 	});
 }
 
 function indexObjectRecord(rec) {
+	if(isRecordIgnored(rec))
+		return setRecordDeleted(rec);
+
 	return Promise.try(() => {
 		let desc = describeRecord(rec);
 		if(desc.objectType) { // have enough info in record
@@ -90,6 +126,9 @@ function indexObjectRecord(rec) {
 }
 
 function indexWorldRecord(rec) {
+	if(isRecordIgnored(rec))
+		return setRecordDeleted(rec);
+
 	return Promise.try(() => {
 		return readRemotePackedObject(rec.assetUri).then(obj => {
 			if(!obj)
@@ -144,6 +183,9 @@ function loop() {
 				return indexObjectRecord(rec);
 			if(rec.recordType === "world")
 				return indexWorldRecord(rec);
+
+			if(isRecordIgnored(rec))
+				return setRecordDeleted(rec);
 			return maybeIndexRecord(rec);
 		}).then(() => {
 			return deletePendingRecord(rec);
@@ -154,16 +196,32 @@ function loop() {
 	});
 }
 
+function getAllDirectoryRecords() {
+	return db.searchRecords({
+		bool: {
+			filter: [
+				{ term: { recordType: "directory" }},
+				{ term: { isDeleted: false }},
+			]
+		}
+	}, db.MAX_SIZE).then(res => res.hits);
+}
+
+
+function deleteIgnoredDirectories() {
+	return getAllDirectoryRecords().then(records => {
+		return Promise.map(records, rec => {
+			if(isRecordIgnored(rec)) {
+				console.log(`deleteIgnoredDirectories ${recordToString(rec)}`);
+				return handleIgnoredDirectoryRecord(rec);
+			}
+		}, { concurrency: CONCURRENCY });;
+	});
+}
+
 function rescan() {
 	return Promise.join(
-		db.searchRecords({
-			bool: {
-				filter: [
-					{ term: { recordType: "directory" }},
-					{ term: { isDeleted: false }},
-				]
-			}
-		}, db.MAX_SIZE).then(res => res.hits),
+		getAllDirectoryRecords(),
 		db.searchPendingRecords({
 			term: { recordType: "directory" }
 		}, db.MAX_SIZE).then(res => res.hits)
@@ -217,11 +275,18 @@ function propagateIsDeleted() {
 	});
 }
 
-const roots = require("../data/roots");
-maybeFetchAndIndexPendingRecordUris(roots, CONCURRENCY).then(() => {
-	if(process.argv[2] === "rescan")
-		return rescan();
-}).then(loop).then(propagateIsDeleted).then(() => {
+const action = process.argv[2];
+function asyncMain() {
+	if(action === "deleteIgnoredDirectories")
+		return deleteIgnoredDirectories();
+
+	return maybeFetchAndIndexPendingRecordUris(roots, CONCURRENCY).then(() => {
+		if(process.argv[2] === "rescan")
+			return rescan();
+	}).then(loop).then(propagateIsDeleted);
+}
+
+asyncMain().then(() => {
 	console.log("done");
 	process.exit(0);
 }).catch(err => {
