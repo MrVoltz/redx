@@ -10,16 +10,12 @@ const cloudx = require("../lib/cloudx");
 const db = require("../lib/db");
 const { describeRecord, describeObject, describeWorld } = require("../lib/objectdescriber");
 const { recordToString, readRemotePackedObject, isRecordNewer, maybeIndexRecord, maybeIndexPendingRecord, maybeFetchAndIndexPendingRecordUri, maybeFetchAndIndexPendingRecordUris, setRecordDeleted } = require("../lib/spider-utils");
-const { indexBy } = require("../lib/utils");
+const { indexBy, backOff } = require("../lib/utils");
 const { isRecordIgnored } = require("../lib/ignorelist-utils");
 const roots = require("../data/roots");
 
 const CONCURRENCY = 2,
 	BATCH_SIZE = 16;
-
-function sleepAsync(ms) {
-	return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 function handleIgnoredDirectoryRecord(rec) {
 	return Promise.all([
@@ -145,6 +141,12 @@ function indexWorldRecord(rec) {
 	});
 }
 
+function indexGenericRecord(rec) {
+	if(isRecordIgnored(rec))
+		return setRecordDeleted(rec);
+	return maybeIndexRecord(rec);
+}
+
 function deletePendingRecord(rec) {
 	let uri = cloudx.getRecordUri(rec);
 	if(deletedPendingRecordsThisLoop.has(uri)) {
@@ -173,7 +175,7 @@ function loop() {
 			return;
 		}
 
-		return Promise.try(() => {
+		return backOff(() => {
 			console.log(`processPendingRecord ${recordToString(rec)}`);
 			if(rec.recordType === "directory")
 				return indexDirectoryRecord(rec);
@@ -183,10 +185,7 @@ function loop() {
 				return indexObjectRecord(rec);
 			if(rec.recordType === "world")
 				return indexWorldRecord(rec);
-
-			if(isRecordIgnored(rec))
-				return setRecordDeleted(rec);
-			return maybeIndexRecord(rec);
+			return indexGenericRecord(rec);
 		}).then(() => {
 			return deletePendingRecord(rec);
 		});

@@ -1,7 +1,7 @@
 import { CopyOutlined, FolderOutlined, FrownOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { Button, Drawer, Empty, Pagination, Row, Tooltip } from "antd";
 import classNames from "classnames";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { typeOptions } from "../lib/constants";
 import { resolveThumbnailUri, stripRichText, useCopyHelper } from "../lib/utils";
 import "./SearchResults.css";
@@ -54,12 +54,12 @@ function RecordInfo({ record }) {
 	}, [copy, record.spawnParentUri]);
 
 	let pathItems = record.path.split("\\").slice(1).map((name, i) => (
-		<Button className="RecordInfo-pathItem" key={i} size="small" onClick={e => copyParentUri(i+1)}>{stripRichText(name)}</Button>
+		<Button className="RecordInfo-pathItem" key={i} size="small" onClick={e => copyParentUri(i + 1)}>{stripRichText(name)}</Button>
 	));
 
 	let recordTypeName = record.type;
-	for(let o of typeOptions)
-		if(o.value === record.type)
+	for (let o of typeOptions)
+		if (o.value === record.type)
 			recordTypeName = o.label;
 
 	return (
@@ -85,6 +85,31 @@ function RecordInfo({ record }) {
 function SearchResults({ res, pagination: { from, size }, onPaginationChange }) {
 	let { hits, total } = res;
 	let [infoRecord, setInfoRecord] = useState(null);
+	let [recordsInRow, setRecordsInRow] = useState(10);
+
+	let hitsRef = useRef(null);
+	const handleWindowResize = useCallback(() => {
+		if (!hitsRef.current)
+			return;
+		let newRecordsInRow = Math.floor((hitsRef.current.clientWidth + 5) / (120 + 5));
+		if (recordsInRow !== newRecordsInRow)
+			setRecordsInRow(newRecordsInRow);
+		if (size % newRecordsInRow !== 0)
+			onPaginationChange({
+				from, size: Math.min(
+					Math.floor(100 / newRecordsInRow) * newRecordsInRow,
+					Math.ceil(size / newRecordsInRow) * newRecordsInRow
+				)
+			});
+	}, [hitsRef, recordsInRow, setRecordsInRow, from]);
+	useEffect(() => {
+		window.addEventListener("resize", handleWindowResize);
+		return () => {
+			window.removeEventListener("resize", handleWindowResize);
+		};
+	}, [handleWindowResize]);
+
+	let pageSizeOptions = [recordsInRow * 2, Math.floor(50 / recordsInRow) * recordsInRow, Math.floor(100 / recordsInRow) * recordsInRow];
 
 	if (!total)
 		return (
@@ -95,7 +120,7 @@ function SearchResults({ res, pagination: { from, size }, onPaginationChange }) 
 
 	return (
 		<div className="SearchResults">
-			<div className="SearchResults-hits">
+			<div className="SearchResults-hits" ref={hitsRef}>
 				{hits.map(hit => (
 					<Record record={hit} key={hit.id} onShowRecordInfoClick={() => setInfoRecord(hit)} />
 				))}
@@ -105,7 +130,7 @@ function SearchResults({ res, pagination: { from, size }, onPaginationChange }) 
 				<Pagination
 					total={total}
 					pageSize={size}
-					// pageSizeOptions={pageSizeOptions}
+					pageSizeOptions={pageSizeOptions}
 					current={Math.floor(from / size) + 1}
 					onChange={(page, pageSize) => onPaginationChange({ from: (page - 1) * pageSize, size: pageSize })}
 				/>
