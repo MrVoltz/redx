@@ -37,6 +37,23 @@ function handleIgnoredDirectoryRecord(rec) {
 	});
 }
 
+function handleDeletedDirectoryRecord(rec, localChildren, localPendingChildren) {
+	return Promise.all([
+		Promise.map(localChildren, child => {
+			console.log(`indexDirectoryRecord ${recordToString(rec)} deleted removed child ${recordToString(child)}`);
+			return setRecordDeleted(child);
+		}),
+		Promise.map(localPendingChildren, child => {
+			if(child.recordType === "directory") // don't delete pending child directories, in case they were moved somewhere else
+				return;
+			console.log(`indexDirectoryRecord ${recordToString(rec)} deleted removed pending child ${recordToString(child)}`);
+			return deletePendingRecord(child);
+		})
+	]).then(() => {
+		return setRecordDeleted(rec);
+	});
+}
+
 function indexDirectoryRecord(rec) {
 	if(isRecordIgnored(rec)) {
 		// delete all indexed children and then itself
@@ -44,16 +61,27 @@ function indexDirectoryRecord(rec) {
 		return handleIgnoredDirectoryRecord(rec);
 	}
 
-	return Promise.join(
-		cloudx.fetchDirectoryChildren(rec),
+	let isRecordDeleted = false;
+	return Promise.all([
+		cloudx.fetchDirectoryChildren(rec).catch(err => {
+			if(cloudx.isPermanentHttpError(err)) {
+				console.log(`indexDirectoryRecord ${recordToString(rec)} http error ${err.message || err}`);
+				isRecordDeleted = true;
+				return [];
+			}
+			throw err;
+		}),
 		db.searchRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
 		db.searchPendingRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
-	).spread((apiChildren, localChildren, localPendingChildren) => {
+	]).spread((apiChildren, localChildren, localPendingChildren) => {
+		if(isRecordDeleted)
+			return handleDeletedDirectoryRecord(localChildren, localPendingChildren);
+
 		let apiChildrenById = indexBy(apiChildren, "id"),
 			localChildrenById = indexBy(localChildren, "id"),
 			localPendingChildrenById = indexBy(localPendingChildren, "id");
 
-		return Promise.join(
+		return Promise.all([
 			Promise.map(apiChildren, child => {
 				if(localPendingChildrenById.has(child.id))
 					return;
@@ -77,9 +105,9 @@ function indexDirectoryRecord(rec) {
 				console.log(`indexDirectoryRecord ${recordToString(rec)} removed pending child ${recordToString(child)}`);
 				return deletePendingRecord(child);
 			}),
-		);
-	}).then(() => {
-		return maybeIndexRecord(rec);
+		]).then(() => {
+			return maybeIndexRecord(rec);
+		});
 	});
 }
 
@@ -158,7 +186,7 @@ function deletePendingRecord(rec) {
 }
 
 var deletedPendingRecordsThisLoop;
-function loop() {
+function indexPendingRecords() {
 	return Promise.resolve(db.getSomePendingRecords(BATCH_SIZE)).then(records => {
 		if(!records.length)
 			throw "break";
@@ -189,7 +217,7 @@ function loop() {
 		}).then(() => {
 			return deletePendingRecord(rec);
 		});
-	}, { concurrency: CONCURRENCY }).then(loop).catch(err => {
+	}, { concurrency: CONCURRENCY }).then(indexPendingRecords).catch(err => {
 		if(err !== "break")
 			throw err;
 	});
@@ -203,7 +231,7 @@ function getAllDirectoryRecords() {
 				{ term: { isDeleted: false }},
 			]
 		}
-	}, db.MAX_SIZE).then(res => res.hits);
+	}, Infinity).then(res => res.hits);
 }
 
 
@@ -214,7 +242,7 @@ function deleteIgnoredDirectories() {
 				console.log(`deleteIgnoredDirectories ${recordToString(rec)}`);
 				return handleIgnoredDirectoryRecord(rec);
 			}
-		}, { concurrency: CONCURRENCY });;
+		}, { concurrency: CONCURRENCY });
 	});
 }
 
@@ -223,7 +251,7 @@ function rescan() {
 		getAllDirectoryRecords(),
 		db.searchPendingRecords({
 			term: { recordType: "directory" }
-		}, db.MAX_SIZE).then(res => res.hits)
+		}, Infinity).then(res => res.hits)
 	).spread((records, pendingRecords) => {
 		console.log(`rescan ${records.length} records, ${pendingRecords.length} pending records`);
 		let pendingRecordsByUri = new Set;
@@ -240,14 +268,14 @@ function rescan() {
 			return db.indexPendingRecord(rec);
 		}, { concurrency: CONCURRENCY }).then(() => count);
 	}).then(count => {
-		console.log(`rescan indexed ${count} records`);
+		console.log(`rescan added ${count} pending directory records`);
 	});
 }
 
 function propagateIsDeleted() {
 	return db.searchRecords({
 		term: { isDeleted: true }
-	}, db.MAX_SIZE).then(({ hits: deletedRecords }) => {
+	}, Infinity).then(({ hits: deletedRecords }) => {
 		console.log(`propagateIsDeleted ${deletedRecords.length} deleted records`);
 		let deletedRecordsByUri = new Set;
 		for(let rec of deletedRecords)
@@ -282,7 +310,7 @@ function asyncMain() {
 	return maybeFetchAndIndexPendingRecordUris(roots, CONCURRENCY).then(() => {
 		if(process.argv[2] === "rescan")
 			return rescan();
-	}).then(loop).then(propagateIsDeleted);
+	}).then(indexPendingRecords); //.then(propagateIsDeleted);
 }
 
 asyncMain().then(() => {
