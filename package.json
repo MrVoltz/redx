@@ -30,6 +30,7 @@
     "lru-cache": "^7.4.4",
     "lz4": "^0.6.5",
     "lzma-native": "^8.0.1",
+    "path-to-regexp": "^6.2.1",
     "through2": "^4.0.2",
     "underscore": "^1.13.1"
   },

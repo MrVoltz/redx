@@ -1,16 +1,18 @@
 require("dotenv").config();
 
-const express = require("express"),
-	_ = require("underscore"),
-	Promise = require("bluebird"),
-	{ param, query, matchedData, validationResult } = require("express-validator");
+const express = require("express");
+const _ = require("underscore");
+const Promise = require("bluebird");
+const { param, query, matchedData, validationResult } = require("express-validator");
 
-const makeInventoryLink = require("../data/inventorylink"),
-	{ writePackedObject } = require("../lib/objectloader"),
-	{ parseUri, getRecordUri, getRecordIdType } = require("../lib/cloudx"),
-	{ searchRecords, getRecord } = require("../lib/db"),
-	{ sendHits, buildFulltextQuery, processLocalHits } = require("../lib/server-utils"),
-	guillefix = require("../lib/guillefix");
+const makeInventoryLink = require("../data/inventorylink");
+const { writePackedObject } = require("../lib/objectloader");
+const { parseUri, getRecordUri, getRecordIdType, fetchRecord, fetchDirectoryChildren, parseRecordUri, getParentDirectoryRecordStub } = require("../lib/cloudx");
+const { searchRecords, getRecord, buildChildrenQuery, MAX_SIZE } = require("../lib/db");
+const { sendHits, buildFulltextQuery, processLocalHits, LINK_ENDPOINT_VERSION } = require("../lib/server-utils");
+const guillefix = require("../lib/guillefix");
+const routeAliases = require("../lib/route-aliases");
+const { defineAlias } = routeAliases;
 
 const app = express();
 
@@ -22,15 +24,22 @@ app.set("trust proxy", "loopback");
 app.use((req, res, next) => {
 	let trust = req.app.get('trust proxy fn'),
 		host = req.get('X-Forwarded-Host');
-	if (!host || !trust(req.connection.remoteAddress, 0))
+	if(!host || !trust(req.connection.remoteAddress, 0))
 		host = req.get('Host');
-	else if (host.indexOf(',') !== -1)
+	else if(host.indexOf(',') !== -1)
 		host = host.substring(0, host.indexOf(',')).trimRight();
 
+	let protocol = req.get("X-Forwarded-Proto");
+	if(!protocol || !trust(req.connection.remoteAddress, 0))
+		protocol = req.protocol;
+
 	req.realHost = host;
-	req.fullBaseUrl = `${req.protocol}://${req.realHost}${req.baseUrl}`;
+	req.realProtocol = protocol;
+	req.fullBaseUrl = `${req.realProtocol}://${req.realHost}${req.baseUrl}`;
 	next();
 });
+
+routeAliases.install(app);
 
 // Frontend
 app.use(express.static(__dirname + "/../redx-frontend/build"));
@@ -47,33 +56,28 @@ function validateRequest(req) {
 	return true;
 }
 
-app.get("/search.:format", [
-	param("format").isIn(["animx","animj","json"]),
+const listReqParams = [
+	param("format").isIn(["animx", "animj", "json"]),
+	query("size").isInt({ min: 1, max: 200 }).toInt().optional(),
+	query("from").isInt({ min: 0 }).toInt().optional(),
+	query("v").isInt({ min: -(2 ** 31), max: (2 ** 31) - 1 }).toInt().optional()
+];
+
+app.get(defineAlias("search", "/search.:format"), [
 	query("type").toArray(),
 	query("q").trim().optional(),
 	query("image_weight").isFloat({ min: 0, max: 1 }).toFloat().optional(),
-	query("size").isInt({ min: 1, max: 200 }).toInt().optional(),
-	query("from").isInt({ min: 0 }).toInt().optional(),
-	query("v").isInt({ min: -(2**31), max: (2**31)-1 }).toInt().optional()
+	listReqParams,
 ], (req, res, next) => {
-	let { format, type, q, size, from, v, image_weight } = matchedData(req);
+	let { format, type, q, size, from, v, image_weight } = _.defaults(matchedData(req), {
+		image_weight: 0, size: 10, from: 0, q: "", v: 0
+	});
 	if(!validateRequest(req))
 		return;
 
-	if(image_weight === undefined)
-		image_weight = 0;
-	if(size === undefined)
-		size = 10;
-	if(from === undefined)
-		from = 0;
-	if(q === undefined)
-		q = "";
-	if(v === undefined)
-		v = 0;
-
 	let recordTypes = [], objectTypes = [];
 	for(let t of type) {
-		if([ "directory", "link", "object", "world" ].indexOf(t) !== -1)
+		if(["directory", "link", "object", "world"].indexOf(t) !== -1)
 			recordTypes.push(String(t));
 		else
 			objectTypes.push(String(t));
@@ -81,9 +85,9 @@ app.get("/search.:format", [
 
 	let typeQueries = [];
 	if(recordTypes.length)
-		typeQueries.push({ terms: { recordType: recordTypes }});
+		typeQueries.push({ terms: { recordType: recordTypes } });
 	if(objectTypes.length)
-		typeQueries.push({ terms: { objectType: objectTypes }});
+		typeQueries.push({ terms: { objectType: objectTypes } });
 
 	Promise.try(() => {
 		if(image_weight === 0 || q === "")
@@ -106,37 +110,27 @@ app.get("/search.:format", [
 				must: fulltextQuery || [],
 				should: typeQueries,
 				minimum_should_match: typeQueries.length ? 1 : 0,
-				filter: { term: { isDeleted: false }}
+				filter: { term: { isDeleted: false } },
 			}
 		}, size, from);
 	}).then(({ total, hits }) => {
-		processLocalHits(hits, req.fullBaseUrl);
-		sendHits(res, format, v, total, hits);
+		processLocalHits(hits, req.buildUrl.bind(req), format);
+		sendHits(res, format, hits, { v, total, });
 	}).catch(next);
 });
 
-app.get("/search-guillefix.:format", [
-	param("format").isIn(["animx","animj","json"]),
+app.get(defineAlias("search-guillefix", "/search-guillefix.:format"), [
 	query("q").trim().optional(),
 	query("f").isFloat().toFloat().optional(),
 	query("t").isFloat().toFloat().optional(),
 	query("i").isFloat().toFloat().optional(),
-	query("size").isInt({ min: 1, max: 200 }).toInt().optional(),
-	query("from").isInt({ min: 0 }).toInt().optional(),
-	query("v").isInt({ min: -(2**31), max: (2**31)-1 }).toInt().optional()
+	listReqParams,
 ], (req, res, next) => {
-	let { format, q, f, t, i, size, from, v } = matchedData(req);
+	let { format, q, f, t, i, size, from, v } = _.defaults(matchedData(req), {
+		size: 10, from: 0, q: "", v: 0
+	});
 	if(!validateRequest(req))
 		return;
-
-	if(size === undefined)
-		size = 10;
-	if(from === undefined)
-		from = 0;
-	if(q === undefined)
-		q = "";
-	if(v === undefined)
-		v = 0;
 
 	let fulltextQuery = buildFulltextQuery(q);
 
@@ -144,12 +138,12 @@ app.get("/search-guillefix.:format", [
 		bool: {
 			must: fulltextQuery || [],
 			filter: [
-				{ term: { recordType: "object" }},
-				{ term: { isDeleted: false }}
+				{ term: { recordType: "object" } },
+				{ term: { isDeleted: false } },
 			]
 		}
 	}, size, from).then(({ total, hits }) => {
-		processLocalHits(hits, req.fullBaseUrl);
+		processLocalHits(hits, req.buildUrl.bind(req), format);
 		return { total, hits };
 	});
 
@@ -168,7 +162,7 @@ app.get("/search-guillefix.:format", [
 	Promise.join(localHits, guillefixHits).spread((localHits, guillefixHits) => {
 		let { total, hits } = guillefixHits || localHits;
 
-		sendHits(res, format, v, total, hits);
+		sendHits(res, format, hits, { v, total, });
 	}).catch(next);
 });
 
@@ -186,7 +180,13 @@ function isRecordId(id) {
 	return getRecordIdType(id) === "R";
 }
 
-app.get("/link.bson", [
+function handleRecord404(err) {
+	if(err !== "404")
+		throw err;
+	res.status(404).json({ message: "Record not found" });
+}
+
+app.get(defineAlias("link", "/link.bson"), [
 	query("target").trim().custom(isRecordUri),
 	query("targetName").trim().notEmpty()
 ], (req, res, next) => {
@@ -198,74 +198,270 @@ app.get("/link.bson", [
 	stream.pipe(res);
 });
 
-app.get("/parent-link.bson", [
+function getParentDirectoryRecords(rec, depth, includeSelf = true) {
+	let parts = rec.path.split("\\");
+	if(rec.recordType === "directory" && includeSelf)
+		parts.push(rec.name);
+
+	depth = Math.max(depth, 1); // skip Inventory
+
+	let should = [];
+	for(let i = Math.min(depth, parts.length - 1); i < parts.length; i++) {
+		should.push({
+			bool: {
+				must: [
+					{ term: { path: String(parts.slice(0, i).join("\\")) } },
+					{ term: { "name.name": String(parts[i]) } }
+				]
+			}
+		});
+	}
+
+	let query = {
+		bool: {
+			must: [
+				{ term: { recordType: "directory" } },
+				{ term: { ownerId: String(rec.ownerId) } },
+				{ term: { isDeleted: false } },
+			],
+			should,
+			minimum_should_match: 1
+		}
+	};
+
+	return searchRecords(query, parts.length, 0).then(({ total, hits }) => {
+		return _.sortBy(hits, h => h.path.length);
+	});
+}
+
+function getParentDirectoryRecord(rec) {
+	return getParentDirectoryRecords(rec, Infinity, false).then(parents => parents[0] || null);
+}
+
+app.get(defineAlias("parent-link", "/parent-link.bson"), [
 	query("ownerId").trim().custom(isOwnerId),
 	query("id").trim().custom(isRecordId),
 	query("depth").isInt({ min: 0 }).toInt().optional(),
 ], (req, res, next) => {
-	let { ownerId, id, depth } = matchedData(req);
+	let { ownerId, id, depth } = _.defaults(matchedData(req), { depth: 0 });
 	if(!validateRequest(req))
 		return;
-	if(depth === undefined)
-		depth = 0;
 
 	getRecord(ownerId, id).then(rec => {
 		if(!rec)
 			throw "404";
 
-		let parts = rec.path.split("\\");
-		if(rec.recordType === "directory")
-			parts.push(rec.name);
+		return getParentDirectoryRecords(rec, depth);
+	}).then(parents => {
+		if(!parents.length)
+			throw "404";
+		const parentRec = parents[0];
 
-		depth = Math.max(depth, 1); // skip Inventory
+		const stream = writePackedObject(makeInventoryLink(getRecordUri(parentRec), parentRec.name), "bson");
+		stream.pipe(res);
+	}).catch(handleRecord404).catch(next);
+});
 
-		let should = [];
-		for(let i = Math.min(depth, parts.length-1); i < parts.length; i++) {
-			should.push({
-				bool: {
-					must: [
-						{ term: { path: String(parts.slice(0, i).join("\\")) }},
-						{ term: { "name.name": String(parts[i]) }}
-					]
-				}
+function isValidHistArray(value) {
+	return _.all(value, item => {
+		const parsed = new URLSearchParams(item);
+		return parsed.has("ownerId") && parsed.has("id");
+	});
+}
+
+function parseHistArray(value) {
+	return value.map(item => {
+		const parsed = new URLSearchParams(item);
+		return {
+			ownerId: parsed.get("ownerId"),
+			id: parsed.get("id"),
+			incoming: parsed.has("incoming")
+		};
+	});
+}
+
+function serializeHistArray(value) {
+	return value.map(item => {
+		const params = new URLSearchParams;
+		params.append("ownerId", item.ownerId);
+		params.append("id", item.id);
+		if(item.incoming)
+			params.append("incoming", "");
+		return params.toString();
+	});
+}
+
+function createSpecialLink(data) {
+	return _.extend({
+		ownerId: null,
+		ownerName: null,
+		id: null,
+		name: "",
+		tags: [],
+		recordType: "special",
+		objectType: null,
+		path: "",
+		assetUri: null,
+		thumbnailUri: null,
+	}, data);
+}
+
+const browseReqParams = [
+	query("ownerId").trim().custom(isOwnerId),
+	query("id").trim().custom(isRecordId),
+	query("incoming").toBoolean(),
+	query("hist").toArray().custom(isValidHistArray).customSanitizer(parseHistArray),
+	listReqParams,
+];
+
+app.get(defineAlias("browse", "/browse.:format"), browseReqParams, (req, res, next) => {
+	const { ownerId, id, incoming, size, from, hist, format, v } = _.defaults(matchedData(req), {
+		size: 10, from: 0, hist: [], v: 0
+	});
+	if(!validateRequest(req))
+		return;
+
+	const MAX_HIST_LENGTH = 10;
+
+	if(hist.length >= MAX_HIST_LENGTH)
+		hist.splice(0, MAX_HIST_LENGTH - hist.length + 1); // remove one more than limit to make space for new entries
+
+	// TODO: handle incoming parameter
+
+	function getBackLink(hist) {
+		if(!hist.length)
+			return createSpecialLink({
+				name: "(back)",
 			});
+
+		const lastEntry = hist[hist.length - 1];
+		const rest = hist.slice(0, hist.length - 1);
+
+		return createSpecialLink({
+			name: "(back)",
+			browseUri: req.buildUrl("browse", {
+				format,
+				ownerId: lastEntry.ownerId,
+				id: lastEntry.id,
+				incoming: lastEntry.incoming || undefined,
+				hist: serializeHistArray(rest),
+			}, true)
+		});
+	}
+
+	function getUpLink(rec) {
+		return getParentDirectoryRecord(rec).then(parentRec => {
+			if(!parentRec)
+				return createSpecialLink({
+					name: "(up)",
+				});
+
+			const newHist = [...hist, { ownerId, id, incoming }];
+			return createSpecialLink({
+				name: "(up)",
+				browseUri: req.buildUrl("browse", {
+					format,
+					ownerId: parentRec.ownerId,
+					id: parentRec.id,
+					hist: serializeHistArray(newHist),
+				}, true)
+			});
+		});
+	}
+
+	function redirectToRecord(rec, hist) {
+		res.redirect(req.buildUrl("browse", {
+			ownerId: rec.ownerId,
+			id: rec.id,
+			size, from, hist: serializeHistArray(hist), format, v,
+		}));
+	}
+
+	getRecord(ownerId, id).then(rec => {
+		if(!rec)
+			throw "404";
+
+		if(rec.recordType === "link") {
+			if(!isRecordUri(rec.assetUri))
+				throw new Error("Invalid link");
+			redirectToRecord(parseRecordUri(rec.assetUri), hist);
+			throw "break";
 		}
 
-		let query = {
+		if(rec.recordType !== "directory")
+			throw new Error(`Unsupported record type: ${rec.recordType}`);
+
+		const query = {
 			bool: {
-				must: [
-					{ term: { recordType: "directory" }},
-					{ term: { ownerId: String(rec.ownerId) }}
-				],
-				should,
-				minimum_should_match: 1
+				filter: [
+					buildChildrenQuery(rec),
+					{ term: { isDeleted: false } },
+				]
 			}
 		};
 
-		return searchRecords(query, parts.length, 0);
-	}).then(({ total, hits }) => {
-		if(!hits.length)
-			throw "404";
-		hits = _.sortBy(hits, h => h.path.length);
-		let rec = hits[0];
+		const sort = [
+			{ "name.name": "asc" },
+		];
 
-		let stream = writePackedObject(makeInventoryLink(getRecordUri(rec), rec.name), "bson");
-		stream.pipe(res);
-	}).catch(err => {
-		if(err !== "404")
+		return Promise.all([
+			from <= 0 && from + size > 0 && getBackLink(hist),
+			from <= 1 && from + size > 1 && getUpLink(rec),
+			searchRecords(query, size + Math.min(0, from - 2), Math.max(0, from - 2), { sort }),
+		]).spread((backLink, upLink, { total, hits }) => {
+			if(upLink)
+				hits.unshift(upLink);
+			if(backLink)
+				hits.unshift(backLink);
+			total += 2;
+
+			const newHist = [...hist, { ownerId, id, incoming }];
+			const modalTitle = `Browse: ${rec.name}`;
+			const spawnUri = req.buildUrl("link", {
+				target: getRecordUri(rec),
+				targetName: rec.name,
+				v: LINK_ENDPOINT_VERSION
+			}, true);
+
+			processLocalHits(hits, req.buildUrl.bind(req), format, serializeHistArray(newHist));
+			sendHits(res, format, hits, { v, total, modalTitle, spawnUri, });
+		});
+	}).catch(handleRecord404).catch(err => {
+		if(err !== "break")
 			throw err;
-		res.status(404).json({ message: "Record not found" });
 	}).catch(next);
 });
 
-app.get("/browse.:format", [
-	query("ownerId").trim().custom(isOwnerId),
-	query("id").trim().custom(isRecordId),
-	query("size").isInt({ min: 1, max: 200 }).toInt().optional(),
-	query("from").isInt({ min: 0 }).toInt().optional(),
-	query("v").isInt({ min: -(2**31), max: (2**31)-1 }).toInt().optional()
+app.get(defineAlias("browse-parent", "/browse-parent.:format"), [
+	browseReqParams,
+	query("depth").isInt({ min: 0 }).toInt().optional(),
 ], (req, res, next) => {
+	const { ownerId, id, incoming, size, from, hist, format, v, depth } = _.defaults(matchedData(req), {
+		size: 10, from: 0, hist: [], v: 0, depth: 0,
+	});
+	if(!validateRequest(req))
+		return;
 
+	getRecord(ownerId, id).then(rec => {
+		if(!rec)
+			throw "404";
+
+		return getParentDirectoryRecords(rec, depth);
+	}).then(parents => {
+		if(!parents.length)
+			throw "404";
+		const parentRec = parents[0];
+
+		if(hist.length && hist[hist.length - 1].ownerId === parentRec.ownerId && hist[hist.length - 1].id === parentRec.id)
+			hist.pop(); // prevent duplication of last history entry
+
+		res.redirect(req.buildUrl("browse", {
+			ownerId: parentRec.ownerId,
+			id: parentRec.id,
+			incoming: incoming || undefined,
+			size, from, hist: serializeHistArray(hist), format, v,
+		}));
+	}).catch(handleRecord404).catch(next);
 });
 
 app.use((req, res, next) => {
