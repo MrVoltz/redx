@@ -14,7 +14,7 @@ export function useConstant(fn) {
 export function resolveThumbnailUri(uri) {
   let m = uri.match(/^neosdb:\/\/([^.]+)\.(.+)$/);
   if (m)
-    return "https://assets.neos.com/assets" + m[1];
+    return "https://cloudx.azureedge.net/assets" + m[1];
   return uri;
 }
 
