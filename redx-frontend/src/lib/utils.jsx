@@ -4,7 +4,7 @@ import { useRef } from "react"
 export function useConstant(fn) {
   const ref = useRef();
 
-  if (!ref.current)
+  if(!ref.current)
     ref.current = { v: fn() };
 
   return ref.current.v;
@@ -12,9 +12,13 @@ export function useConstant(fn) {
 
 /** @param {String} uri */
 export function resolveThumbnailUri(uri) {
-  let m = uri.match(/^neosdb:\/\/([^.]+)\.(.+)$/);
-  if (m)
-    return "https://cloudx.azureedge.net/assets" + m[1];
+  console.log("resolveThumbnailUri", uri);
+  const m = uri.match(/^neosdb:\/\/([^.]+)\.(.+)$/);
+  if(m)
+    return "https://assets.neos.com/assets" + m[1];
+  const m2 = uri.match(/^resdb:\/\/([^.]+)\.(.+)$/);
+  if(m2)
+    return "https://assets.resonite.com" + m2[1];
   return uri;
 }
 
@@ -28,7 +32,7 @@ export function useCopyHelper(value) {
   return [
     <input tabIndex={-1} readOnly={true} className="SearchResults-copyInput" ref={inputRef} value={value} />,
     (valueOverride) => {
-      if (valueOverride !== undefined)
+      if(valueOverride !== undefined)
         inputRef.current.value = valueOverride;
       inputRef.current.select();
       document.execCommand("copy");

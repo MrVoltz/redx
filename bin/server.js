@@ -7,7 +7,7 @@ const { param, query, matchedData, validationResult } = require("express-validat
 
 const makeInventoryLink = require("../data/inventorylink");
 const { writePackedObject } = require("../lib/objectloader");
-const { parseUri, getRecordUri, getRecordIdType, fetchRecord, fetchDirectoryChildren, parseRecordUri, getParentDirectoryRecordStub } = require("../lib/cloudx");
+const { parseUri, getRecordUri, getRecordIdType, fetchRecord, fetchDirectoryChildren, parseRecordUri, getParentDirectoryRecordStub, isRecordUri } = require("../lib/cloudx");
 const { searchRecords, getRecord, buildChildrenQuery, MAX_SIZE, buildExactRecordQuery } = require("../lib/db");
 const { sendSearchResponse, buildFulltextQuery, processLocalHits, LINK_ENDPOINT_VERSION, sendBrowseResponse } = require("../lib/server-utils");
 const guillefix = require("../lib/guillefix");
@@ -167,10 +167,6 @@ app.get(defineAlias("search-guillefix", "/search-guillefix.:format"), [
 	}).catch(next);
 });
 
-function isRecordUri(uri) {
-	uri = parseUri(uri);
-	return uri.protocol === "neosrec:";
-}
 
 function isOwnerId(id) {
 	let type = getRecordIdType(id);
@@ -248,7 +244,7 @@ app.get(defineAlias("parent-link", "/parent-link.bson"), [
 	if(!validateRequest(req))
 		return;
 
-	getRecord(ownerId, id).then(rec => {
+	getRecord({ ownerId, id }).then(rec => {
 		if(!rec)
 			throw "404";
 
@@ -376,7 +372,7 @@ app.get(defineAlias("browse", "/browse.:format"), browseReqParams, (req, res, ne
 		for(let i = 0; i < hist.length; i++) {
 			if(i < startLen || i >= hist.length - endLen) {
 				const { ownerId, id } = hist[i];
-				should.push(buildExactRecordQuery(ownerId, id));
+				should.push(buildExactRecordQuery({ ownerId, id }));
 			}
 		}
 
@@ -430,7 +426,7 @@ app.get(defineAlias("browse", "/browse.:format"), browseReqParams, (req, res, ne
 		}));
 	}
 
-	getRecord(ownerId, id).then(rec => {
+	getRecord({ ownerId, id }).then(rec => {
 		if(!rec)
 			throw "404";
 
@@ -497,7 +493,7 @@ app.get(defineAlias("browse-parent", "/browse-parent.:format"), [
 	if(!validateRequest(req))
 		return;
 
-	getRecord(ownerId, id).then(rec => {
+	getRecord({ ownerId, id }).then(rec => {
 		if(!rec)
 			throw "404";
 

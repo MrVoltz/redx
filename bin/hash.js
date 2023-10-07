@@ -15,10 +15,10 @@ if(!isRecordUri(uri)) {
 	usage();
 }
 
-const record = parseRecordUri(uri);
+const recordStub = parseRecordUri(uri);
 process.stdout.write(
 `Uri: ${uri}
-OwnerId: ${record.ownerId}
-Id: ${record.id}
-Hash: ${getRecordHash(record)}
+OwnerId: ${recordStub.ownerId}
+Id: ${recordStub.id}
+Hash: ${getRecordHash(recordStub)}
 `);

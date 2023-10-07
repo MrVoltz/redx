@@ -14,8 +14,8 @@ const { indexBy, backOff } = require("../lib/utils");
 const { isRecordIgnored } = require("../lib/ignorelist-utils");
 const roots = require("../data/roots");
 
-const CONCURRENCY = 2,
-	BATCH_SIZE = 16;
+const CONCURRENCY = 2;
+const BATCH_SIZE = 16;
 
 function handleIgnoredDirectoryRecord(rec) {
 	return Promise.all([
@@ -77,9 +77,9 @@ function indexDirectoryRecord(rec) {
 		if(isRecordDeleted)
 			return handleDeletedDirectoryRecord(localChildren, localPendingChildren);
 
-		let apiChildrenById = indexBy(apiChildren, "id"),
-			localChildrenById = indexBy(localChildren, "id"),
-			localPendingChildrenById = indexBy(localPendingChildren, "id");
+		const apiChildrenById = indexBy(apiChildren, "id");
+		const localChildrenById = indexBy(localChildren, "id");
+		const localPendingChildrenById = indexBy(localPendingChildren, "id");
 
 		return Promise.all([
 			Promise.map(apiChildren, child => {
@@ -176,16 +176,16 @@ function indexGenericRecord(rec) {
 }
 
 function deletePendingRecord(rec) {
-	let uri = cloudx.getRecordUri(rec);
+	const uri = cloudx.getRecordUri(rec);
 	if(deletedPendingRecordsThisLoop.has(uri)) {
 		console.log(`deletePendingRecord ${recordToString(rec)} already deleted`);
 		return Promise.resolve(false);
 	}
 	deletedPendingRecordsThisLoop.add(uri);
-	return db.deletePendingRecord(rec.ownerId, rec.id).then(() => true);
+	return db.deletePendingRecord(rec).then(() => true);
 }
 
-var deletedPendingRecordsThisLoop;
+let deletedPendingRecordsThisLoop;
 function indexPendingRecords() {
 	return Promise.resolve(db.getSomePendingRecords(BATCH_SIZE)).then(records => {
 		if(!records.length)
@@ -194,10 +194,10 @@ function indexPendingRecords() {
 		deletedPendingRecordsThisLoop = new Set;
 
 		// deduplicate records to prevent elastic race condition
-		let recordsByUri = indexBy(records, rec => cloudx.getRecordUri(rec));
+		const recordsByUri = indexBy(records, rec => cloudx.getRecordUri(rec));
 		return recordsByUri.values();
 	}).map(rec => {
-		let uri = cloudx.getRecordUri(rec);
+		const uri = cloudx.getRecordUri(rec);
 		if(deletedPendingRecordsThisLoop.has(uri)) {
 			console.log(`processPendingRecord ${recordToString(rec)} skipped already deleted pending record`);
 			return;

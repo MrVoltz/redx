@@ -1,11 +1,13 @@
 const fs = require("fs"),
 	util = require("util");
 
-const { readPackedObject } = require("../lib/objectloader"),
-	{ describeObject, describeWorld } = require("../lib/objectdescriber");
+const { readPackedObject } = require("../lib/objectloader");
+const { describeObject, describeWorld } = require("../lib/objectdescriber");
 
-let stream = fs.createReadStream(process.argv[2]);
-readPackedObject(stream, "7zbson").then(obj => {
+const stream = fs.createReadStream(process.argv[2]);
+const format = process.argv[3] || "7zbson";
+
+readPackedObject(stream, format).then(obj => {
 	if(obj.Slots)
 		console.log(describeWorld(obj));
 	else if(obj.Object)

@@ -17,7 +17,7 @@ function RecordThumbnail({ thumbnailUri, name }) {
 }
 
 function Record({ record, onShowRecordInfoClick }) {
-	let recordOrAssetUri = record.assetUri || `neosrec:///${record.ownerId}/${record.id}`;
+	let recordOrAssetUri = record.assetUri || `resrec:///${record.ownerId}/${record.id}`;
 
 	let [copyHelper, copy] = useCopyHelper(recordOrAssetUri);
 
