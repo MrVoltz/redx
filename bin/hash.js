@@ -20,5 +20,7 @@ process.stdout.write(
 `Uri: ${uri}
 OwnerId: ${recordStub.ownerId}
 Id: ${recordStub.id}
+Path: ${recordStub.path}
+Name: ${recordStub.name}
 Hash: ${getRecordHash(recordStub)}
 `);
