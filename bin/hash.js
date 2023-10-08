@@ -1,4 +1,4 @@
-const { isRecordUri, parseRecordUri } = require("../lib/cloudx");
+const { isRecordUri, parseRecordUri, fetchRecord, getRecordUri } = require("../lib/cloudx");
 const { getRecordHash } = require("../lib/ignorelist-utils");
 
 function usage() {
@@ -16,11 +16,23 @@ if(!isRecordUri(uri)) {
 }
 
 const recordStub = parseRecordUri(uri);
-process.stdout.write(
-`Uri: ${uri}
-OwnerId: ${recordStub.ownerId}
-Id: ${recordStub.id}
-Path: ${recordStub.path}
-Name: ${recordStub.name}
-Hash: ${getRecordHash(recordStub)}
-`);
+
+function recordToString(rec) {
+	return `[${rec.recordType}] ${getRecordUri(rec)} (${rec.path}\\${rec.name})`;
+}
+
+function asyncMain() {
+	return fetchRecord(recordStub).then(record => {
+		console.error(recordToString(record));
+
+		console.log(getRecordHash({ ownerId: record.ownerId, id: record.id }));
+		console.log(getRecordHash({ ownerId: record.ownerId, path: record.path, name: record.name, }));
+	});
+}
+
+asyncMain().then(() => {
+	process.exit(0);
+}).catch(err => {
+	console.error(err.stack || err);
+	process.exit(1);
+});

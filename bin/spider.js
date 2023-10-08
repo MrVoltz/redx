@@ -14,7 +14,7 @@ const { indexBy, backOff } = require("../lib/utils");
 const { isRecordIgnored } = require("../lib/ignorelist-utils");
 const roots = require("../data/roots");
 
-const CONCURRENCY = 2;
+const CONCURRENCY = 1;
 const BATCH_SIZE = 16;
 
 function handleIgnoredDirectoryRecord(rec) {
