@@ -183,15 +183,16 @@ function handleRecord404(err) {
 	res.status(404).json({ message: "Record not found" });
 }
 
-app.get(defineAlias("link", "/link.bson"), [
+app.get(defineAlias("link", "/link.:format"), [
 	query("target").trim().custom(isRecordUri),
-	query("targetName").trim().notEmpty()
+	query("targetName").trim().notEmpty(),
+	param("format").isIn(["bson", "brson", "lz4bson"]),
 ], (req, res, next) => {
-	const { target, targetName } = matchedData(req);
+	const { target, targetName, format } = matchedData(req);
 	if(!validateRequest(req))
 		return;
 
-	const stream = writePackedObject(makeInventoryLink(target, targetName), "bson");
+	const stream = writePackedObject(makeInventoryLink(target, targetName), format);
 	stream.pipe(res);
 });
 
@@ -235,12 +236,13 @@ function getParentDirectoryRecord(rec) {
 	return getParentDirectoryRecords(rec, Infinity, false).then(parents => parents[0] || null);
 }
 
-app.get(defineAlias("parent-link", "/parent-link.bson"), [
+app.get(defineAlias("parent-link", "/parent-link.:format"), [
 	query("ownerId").trim().custom(isOwnerId),
 	query("id").trim().custom(isRecordId),
 	query("depth").isInt({ min: 0 }).toInt().optional(),
+	param("format").isIn(["bson", "brson", "lz4bson"]),
 ], (req, res, next) => {
-	const { ownerId, id, depth } = _.defaults(matchedData(req), { depth: 0 });
+	const { ownerId, id, depth, format } = _.defaults(matchedData(req), { depth: 0 });
 	if(!validateRequest(req))
 		return;
 
@@ -254,7 +256,7 @@ app.get(defineAlias("parent-link", "/parent-link.bson"), [
 			throw "404";
 		const parentRec = parents[0];
 
-		const stream = writePackedObject(makeInventoryLink(getRecordUri(parentRec), parentRec.name), "bson");
+		const stream = writePackedObject(makeInventoryLink(getRecordUri(parentRec), parentRec.name), format);
 		stream.pipe(res);
 	}).catch(handleRecord404).catch(next);
 });
@@ -468,11 +470,7 @@ app.get(defineAlias("browse", "/browse.:format"), browseReqParams, (req, res, ne
 			total += 2;
 
 			const modalTitle = `Browse: ${rec.name}`;
-			const spawnUri = req.buildUrl("link", {
-				target: getRecordUri(rec),
-				targetName: rec.name,
-				v: LINK_ENDPOINT_VERSION
-			}, true);
+			const spawnUri = getRecordUri(rec);
 
 			processLocalHits(hits, req.buildUrl.bind(req), format, serializeHistArray(newHist));
 			sendBrowseResponse(res, format, hits, resolvedHist, { v, total, modalTitle, spawnUri });
