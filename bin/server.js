@@ -4,16 +4,20 @@ const express = require("express");
 const _ = require("underscore");
 const Promise = require("bluebird");
 const { param, query, matchedData, validationResult } = require("express-validator");
+const assert = require("assert");
 
 const makeInventoryLink = require("../data/inventorylink");
 const { writePackedObject } = require("../lib/objectloader");
-const { parseUri, getRecordUri, getRecordIdType, fetchRecord, fetchDirectoryChildren, parseRecordUri, getParentDirectoryRecordStub, isRecordUri } = require("../lib/cloudx");
-const { searchRecords, getRecord, buildChildrenQuery, MAX_SIZE, buildExactRecordQuery } = require("../lib/db");
+const { parseUri, getRecordUri, getRecordIdType, fetchRecord, fetchDirectoryChildren, parseRecordUri, getParentDirectoryRecordStub, isRecordUri, areRecordsEqual, isAssetUri } = require("../lib/cloudx");
+const { searchRecords, getRecord, buildChildrenQuery, MAX_SIZE, buildExactRecordQuery, buildNotDeletedQuery } = require("../lib/db");
 const { sendSearchResponse, buildFulltextQuery, processLocalHits, LINK_ENDPOINT_VERSION, sendBrowseResponse } = require("../lib/server-utils");
 const guillefix = require("../lib/guillefix");
 const routeAliases = require("../lib/route-aliases");
 const { indexBy } = require("../lib/utils");
+const { fetchRecordCached } = require("../lib/cloudx-cache");
 const { defineAlias } = routeAliases;
+const roots = require("../data/roots");
+const { rateLimit } = require("express-rate-limit");
 
 const app = express();
 
@@ -111,7 +115,7 @@ app.get(defineAlias("search", "/search.:format"), [
 				must: fulltextQuery || [],
 				should: typeQueries,
 				minimum_should_match: typeQueries.length ? 1 : 0,
-				filter: { term: { isDeleted: false } },
+				filter: [buildNotDeletedQuery()],
 			}
 		}, size, from);
 	}).then(({ total, hits }) => {
@@ -140,7 +144,7 @@ app.get(defineAlias("search-guillefix", "/search-guillefix.:format"), [
 			must: fulltextQuery || [],
 			filter: [
 				{ term: { recordType: "object" } },
-				{ term: { isDeleted: false } },
+				buildNotDeletedQuery(),
 			]
 		}
 	}, size, from).then(({ total, hits }) => {
@@ -222,7 +226,7 @@ function getParentDirectoryRecords(rec, depth, includeSelf = true) {
 			filter: [
 				{ term: { recordType: "directory" } },
 				{ term: { ownerId: String(rec.ownerId) } },
-				{ term: { isDeleted: false } },
+				buildNotDeletedQuery(),
 			],
 		}
 	};
@@ -384,7 +388,7 @@ app.get(defineAlias("browse", "/browse.:format"), browseReqParams, (req, res, ne
 				minimum_should_match: 1,
 				filter: [
 					{ term: { recordType: "directory" } },
-					{ term: { isDeleted: false } },
+					buildNotDeletedQuery(),
 				],
 			}
 		};
@@ -448,7 +452,7 @@ app.get(defineAlias("browse", "/browse.:format"), browseReqParams, (req, res, ne
 			bool: {
 				filter: [
 					buildChildrenQuery(rec),
-					{ term: { isDeleted: false } },
+					buildNotDeletedQuery(),
 				]
 			}
 		};
@@ -511,6 +515,136 @@ app.get(defineAlias("browse-parent", "/browse-parent.:format"), [
 			size, from, hist: serializeHistArray(hist), format, v,
 		}));
 	}).catch(handleRecord404).catch(next);
+});
+
+function getIncomingLinkRecords(recordStub, includeDeleted = true) {
+	assert(!!recordStub.ownerId, "ownerId must be specified");
+	assert(recordStub.id || recordStub.path, "id or path must be specified");
+
+	const should = [];
+
+	// look up incoming links by id
+	if(recordStub.id) {
+		should.push({
+			bool: {
+				filter: [
+					{ term: { recordType: "link" } },
+					{ term: { assetUri: getRecordUri(recordStub, false) } },
+				]
+			}
+		});
+	}
+
+	// incoming links by path & name
+	if(recordStub.path && recordStub.name) {
+		should.push({
+			bool: {
+				filter: [
+					{ term: { recordType: "link" } },
+					{ term: { assetUri: getRecordUri(recordStub, true) } },
+				]
+			}
+		});
+	}
+
+	const filter = [];
+	if(!includeDeleted)
+		filter.push(buildNotDeletedQuery());
+
+	return searchRecords({
+		bool: {
+			should,
+			minimum_should_match: 1,
+			filter,
+		}
+	}, MAX_SIZE).then(({ hits }) => hits);
+}
+
+const originLimiter = rateLimit({
+	windowMs: 60 * 1000,
+	limit: 10,
+	standardHeaders: 'draft-7',
+	legacyHeaders: false,
+});
+
+app.get(defineAlias("origin", "/origin.json"), [
+	query("record").trim().custom(isRecordUri),
+	query("maxDepth").isInt({ min: 0, max: 5 }).toInt().optional(),
+
+	// rate limit only valid requests
+	(req, res, next) => validateRequest(req) && next(),
+	originLimiter,
+], (req, res, next) => {
+	const { record: recordUri, maxDepth = 3 } = matchedData(req);
+	if(!validateRequest(req))
+		return;
+
+	const includeDeleted = false;
+
+	function getRootRecords() {
+		const parsedRoots = roots.map(parseRecordUri).filter(Boolean);
+		if(!parsedRoots.length)
+			return Promise.resolve([]);
+		return searchRecords({
+			bool: {
+				should: parsedRoots.map(rootStub => buildExactRecordQuery(rootStub)),
+				minimum_should_match: 1,
+			}
+		}, MAX_SIZE).then(({ hits }) => hits);
+	}
+
+	getRootRecords().then(rootRecords => {
+		function fetchInfo(recordStub, stack = []) {
+			return Promise.try(() => {
+				const foundCircular = stack.find(rec => areRecordsEqual(rec, recordStub));
+				if(foundCircular)
+					return { ...foundCircular, circular: true };
+
+				const foundRoot = rootRecords.find(root => areRecordsEqual(root, recordStub));
+				if(foundRoot)
+					return { ...foundRoot, root: true };
+
+				if(stack.length >= maxDepth)
+					return { ...recordStub, maxDepthExceeded: true };
+
+				return getRecord(recordStub, false, includeDeleted).then(record => {
+					if(!record)
+						return { ...recordStub, notFound: true };
+
+					const foundCircular = stack.find(rec => areRecordsEqual(rec, record));
+					if(foundCircular)
+						return { ...foundCircular, circular: true };
+
+					const foundRoot = rootRecords.find(root => areRecordsEqual(root, recordStub));
+					if(foundRoot)
+						return { ...foundRoot, root: true };
+
+					const parentRecordStub = getParentDirectoryRecordStub(record);
+					return getIncomingLinkRecords(record, includeDeleted).then(incomingLinks => {
+						const newStack = [...stack, record];
+
+						return Promise.all([
+							parentRecordStub ? fetchInfo(parentRecordStub, newStack) : null,
+							...incomingLinks.flatMap(linkRecord => {
+								const linkParent = getParentDirectoryRecordStub(linkRecord);
+								return linkParent ? [fetchInfo(linkParent, newStack)] : [];
+							}),
+						]).then(([parent, ...linkedFrom]) => {
+							return { ...record, parent, linkedFrom: linkedFrom.filter(Boolean), };
+						});
+					});
+				});
+			}).then(record => ({
+				recordUri: getRecordUri(record),
+				..._.pick(record, ["ownerId", "ownerName", "id", "path", "name", "recordType", "parent", "linkedFrom", "circular", "notFound", "maxDepthExceeded", "root"]),
+			}));
+		}
+
+		const recordStub = parseRecordUri(recordUri);
+		return fetchInfo(recordStub);
+	}).then(info => {
+		res.json(info);
+	}).catch(next);
 });
 
 app.use((req, res, next) => {
