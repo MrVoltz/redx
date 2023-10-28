@@ -2,19 +2,17 @@ require("dotenv").config();
 
 const express = require("express");
 const _ = require("underscore");
-const Promise = require("bluebird");
 const { param, query, matchedData, validationResult } = require("express-validator");
 const assert = require("assert");
 
 const makeInventoryLink = require("../data/inventorylink");
 const { writePackedObject } = require("../lib/objectloader");
-const { parseUri, getRecordUri, getRecordIdType, fetchRecord, fetchDirectoryChildren, parseRecordUri, getParentDirectoryRecordStub, isRecordUri, areRecordsEqual, isAssetUri } = require("../lib/cloudx");
+const { getRecordUri, getRecordIdType, fetchRecord, fetchDirectoryChildren, parseRecordUri, getParentDirectoryRecordStub, isRecordUri, areRecordsEqual, isAssetUri } = require("../lib/cloudx");
 const { searchRecords, getRecord, buildChildrenQuery, MAX_SIZE, buildExactRecordQuery, buildNotDeletedQuery } = require("../lib/db");
 const { sendSearchResponse, buildFulltextQuery, processLocalHits, LINK_ENDPOINT_VERSION, sendBrowseResponse } = require("../lib/server-utils");
 const guillefix = require("../lib/guillefix");
 const routeAliases = require("../lib/route-aliases");
-const { indexBy } = require("../lib/utils");
-const { fetchRecordCached } = require("../lib/cloudx-cache");
+const { indexBy, promiseTry } = require("../lib/utils");
 const { defineAlias } = routeAliases;
 const roots = require("../data/roots");
 const { rateLimit } = require("express-rate-limit");
@@ -53,7 +51,7 @@ app.get("/", (req, res, next) => {
 });
 
 function validateRequest(req) {
-	let errors = validationResult(req);
+	const errors = validationResult(req);
 	if(!errors.isEmpty()) {
 		req.res.status(400).json({ message: "Invalid request", errors: errors.array() });
 		return false;
@@ -94,19 +92,19 @@ app.get(defineAlias("search", "/search.:format"), [
 	if(objectTypes.length)
 		typeQueries.push({ terms: { objectType: objectTypes } });
 
-	Promise.try(() => {
-		if(image_weight === 0 || q === "")
-			return { hits: [], total: 0 };
+	promiseTry(() => {
+		// if(image_weight === 0 || q === "")
+		return { hits: [], total: 0 };
 
-		return guillefix.searchRecordsCached({
-			f: "1e-9", // fuzzy
-			t: "0", // text
-			i: "1", // image
-			q
-		}).catch(err => {
-			console.log(`guillefix endpoint error: ${err.stack || err}`);
-			return { hits: [], total: 0 };
-		});
+		// return guillefix.searchRecordsCached({
+		// 	f: "1e-9", // fuzzy
+		// 	t: "0", // text
+		// 	i: "1", // image
+		// 	q
+		// }).catch(err => {
+		// 	console.log(`guillefix endpoint error: ${err.stack || err}`);
+		// 	return { hits: [], total: 0 };
+		// });
 	}).then(({ hits: imageSearchHits }) => {
 		let fulltextQuery = buildFulltextQuery(q, imageSearchHits, image_weight);
 
@@ -131,15 +129,15 @@ app.get(defineAlias("search-guillefix", "/search-guillefix.:format"), [
 	query("i").isFloat().toFloat().optional(),
 	listReqParams,
 ], (req, res, next) => {
-	let { format, q, f, t, i, size, from, v } = _.defaults(matchedData(req), {
+	const { format, q, f, t, i, size, from, v } = _.defaults(matchedData(req), {
 		size: 10, from: 0, q: "", v: 0
 	});
 	if(!validateRequest(req))
 		return;
 
-	let fulltextQuery = buildFulltextQuery(q);
+	const fulltextQuery = buildFulltextQuery(q);
 
-	var localHits = searchRecords({
+	const localHits = searchRecords({
 		bool: {
 			must: fulltextQuery || [],
 			filter: [
@@ -152,21 +150,22 @@ app.get(defineAlias("search-guillefix", "/search-guillefix.:format"), [
 		return { total, hits };
 	});
 
-	var guillefixHits = guillefix.searchRecordsCached({ q, f, t, i }, size, from).then(({ hits, total }) => {
-		for(let rec of hits) {
-			rec.spawnUri = rec.assetUri;
-			rec.spawnParentUri = null;
-		}
+	const guillefixHits = null;
 
-		return { total, hits };
-	}).catch(err => {
-		console.log(`guillefix endpoint error: ${err.stack || err}`);
-		return null;
-	});
+	// const guillefixHits = guillefix.searchRecordsCached({ q, f, t, i }, size, from).then(({ hits, total }) => {
+	// 	for(let rec of hits) {
+	// 		rec.spawnUri = rec.assetUri;
+	// 		rec.spawnParentUri = null;
+	// 	}
 
-	Promise.join(localHits, guillefixHits).spread((localHits, guillefixHits) => {
-		let { total, hits } = guillefixHits || localHits;
+	// 	return { total, hits };
+	// }).catch(err => {
+	// 	console.log(`guillefix endpoint error: ${err.stack || err}`);
+	// 	return null;
+	// });
 
+	Promise.all([localHits, guillefixHits]).then(([localHits, guillefixHits]) => {
+		const { total, hits } = guillefixHits || localHits;
 		sendSearchResponse(res, format, hits, { v, total, });
 	}).catch(next);
 });
@@ -181,10 +180,12 @@ function isRecordId(id) {
 	return getRecordIdType(id) === "R";
 }
 
-function handleRecord404(err) {
-	if(err !== "404")
-		throw err;
-	res.status(404).json({ message: "Record not found" });
+function createRecord404Handler(res) {
+	return (err) => {
+		if(err !== "404")
+			throw err;
+		res.status(404).json({ message: "Record not found" });
+	};
 }
 
 app.get(defineAlias("link", "/link.:format"), [
@@ -262,7 +263,7 @@ app.get(defineAlias("parent-link", "/parent-link.:format"), [
 
 		const stream = writePackedObject(makeInventoryLink(getRecordUri(parentRec), parentRec.name), format);
 		stream.pipe(res);
-	}).catch(handleRecord404).catch(next);
+	}).catch(createRecord404Handler(res)).catch(next);
 });
 
 function isValidHistArray(value) {
@@ -466,7 +467,7 @@ app.get(defineAlias("browse", "/browse.:format"), browseReqParams, (req, res, ne
 			from <= 1 && from + size > 1 && getUpLink(rec, newHist),
 			searchRecords(query, size + Math.min(0, from - 2), Math.max(0, from - 2), { sort }),
 			resolveHistEntries(newHist),
-		]).spread((backLink, upLink, { total, hits }, resolvedHist) => {
+		]).then(([backLink, upLink, { total, hits }, resolvedHist]) => {
 			if(upLink)
 				hits.unshift(upLink);
 			if(backLink)
@@ -479,7 +480,7 @@ app.get(defineAlias("browse", "/browse.:format"), browseReqParams, (req, res, ne
 			processLocalHits(hits, req.buildUrl.bind(req), format, serializeHistArray(newHist));
 			sendBrowseResponse(res, format, hits, resolvedHist, { v, total, modalTitle, spawnUri });
 		});
-	}).catch(handleRecord404).catch(err => {
+	}).catch(createRecord404Handler(res)).catch(err => {
 		if(err !== "break")
 			throw err;
 	}).catch(next);
@@ -514,7 +515,7 @@ app.get(defineAlias("browse-parent", "/browse-parent.:format"), [
 			incoming: incoming || undefined,
 			size, from, hist: serializeHistArray(hist), format, v,
 		}));
-	}).catch(handleRecord404).catch(next);
+	}).catch(createRecord404Handler(res)).catch(next);
 });
 
 function getIncomingLinkRecords(recordStub, includeDeleted = true) {
@@ -595,7 +596,7 @@ app.get(defineAlias("origin", "/origin.json"), [
 
 	getRootRecords().then(rootRecords => {
 		function fetchInfo(recordStub, stack = []) {
-			return Promise.try(() => {
+			return promiseTry(() => {
 				const foundCircular = stack.find(rec => areRecordsEqual(rec, recordStub));
 				if(foundCircular)
 					return { ...foundCircular, circular: true };

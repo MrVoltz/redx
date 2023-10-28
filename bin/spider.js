@@ -1,6 +1,5 @@
 require("dotenv").config();
 
-const Promise = require("bluebird");
 const fsPromises = require("fs/promises");
 const fs = require("fs");
 const path = require("path");
@@ -10,9 +9,10 @@ const cloudx = require("../lib/cloudx");
 const db = require("../lib/db");
 const { describeRecord, describeObject, describeWorld } = require("../lib/objectdescriber");
 const { recordToString, readRemotePackedObject, isRecordNewer, maybeIndexRecord, maybeIndexPendingRecord, maybeFetchAndIndexPendingRecordUri, maybeFetchAndIndexPendingRecordUris, setRecordDeleted } = require("../lib/spider-utils");
-const { indexBy, backOff } = require("../lib/utils");
+const { indexBy, backOff, promiseTry, promiseMap } = require("../lib/utils");
 const { isRecordIgnored } = require("../lib/ignorelist-utils");
 const roots = require("../data/roots");
+const { fetchRecordCached } = require("../lib/cloudx-cache");
 
 const CONCURRENCY = 1;
 const BATCH_SIZE = 16;
@@ -21,13 +21,13 @@ function handleIgnoredDirectoryRecord(rec) {
 	return Promise.all([
 		db.searchRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
 		db.searchPendingRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
-	]).spread((localChildren, localPendingChildren) => {
+	]).then(([localChildren, localPendingChildren]) => {
 		return Promise.all([
-			Promise.map(localChildren, child => {
+			...localChildren.map(child => {
 				console.log(`indexDirectoryRecord ${recordToString(rec)} ignored removed child ${recordToString(child)}`);
 				return setRecordDeleted(child);
 			}),
-			Promise.map(localPendingChildren, child => {
+			...localPendingChildren.map(child => {
 				console.log(`indexDirectoryRecord ${recordToString(rec)} ignored removed pending child ${recordToString(child)}`);
 				return deletePendingRecord(child);
 			})
@@ -39,11 +39,11 @@ function handleIgnoredDirectoryRecord(rec) {
 
 function handleDeletedDirectoryRecord(rec, localChildren, localPendingChildren) {
 	return Promise.all([
-		Promise.map(localChildren, child => {
+		...localChildren.map(child => {
 			console.log(`indexDirectoryRecord ${recordToString(rec)} deleted removed child ${recordToString(child)}`);
 			return setRecordDeleted(child);
 		}),
-		Promise.map(localPendingChildren, child => {
+		...localPendingChildren.map(child => {
 			if(child.recordType === "directory") // don't delete pending child directories, in case they were moved somewhere else
 				return;
 			console.log(`indexDirectoryRecord ${recordToString(rec)} deleted removed pending child ${recordToString(child)}`);
@@ -73,7 +73,7 @@ function indexDirectoryRecord(rec) {
 		}),
 		db.searchRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
 		db.searchPendingRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
-	]).spread((apiChildren, localChildren, localPendingChildren) => {
+	]).then(([apiChildren, localChildren, localPendingChildren]) => {
 		if(isRecordDeleted)
 			return handleDeletedDirectoryRecord(localChildren, localPendingChildren);
 
@@ -82,7 +82,7 @@ function indexDirectoryRecord(rec) {
 		const localPendingChildrenById = indexBy(localPendingChildren, "id");
 
 		return Promise.all([
-			Promise.map(apiChildren, child => {
+			...apiChildren.map(child => {
 				if(localPendingChildrenById.has(child.id))
 					return;
 				if(localChildrenById.has(child.id) && !isRecordNewer(child, localChildrenById.get(child.id)))
@@ -92,13 +92,13 @@ function indexDirectoryRecord(rec) {
 				console.log(`indexDirectoryRecord ${recordToString(rec)} added/updated child ${recordToString(child)}`);
 				return db.indexPendingRecord(child);
 			}), // index new records as pending
-			Promise.map(localChildren, child => {
+			...localChildren.map(child => {
 				if(apiChildrenById.has(child.id))
 					return;
 				console.log(`indexDirectoryRecord ${recordToString(rec)} removed child ${recordToString(child)}`);
 				return setRecordDeleted(child);
 			}),
-			Promise.map(localPendingChildren, child => {
+			...localPendingChildren.map(child => {
 				if(apiChildrenById.has(child.id))
 					return;
 
@@ -108,95 +108,92 @@ function indexDirectoryRecord(rec) {
 		]).then(() => {
 			return maybeIndexRecord(rec);
 		});
-	});
+	})
 }
 
-function indexLinkRecord(rec) {
+async function indexLinkRecord(rec) {
 	if(isRecordIgnored(rec))
 		return setRecordDeleted(rec);
 
-	return maybeFetchAndIndexPendingRecordUri(rec.assetUri).then(() => {
-		return maybeIndexRecord(rec);
-	});
+	await maybeFetchAndIndexPendingRecordUri(rec.assetUri);
+	await maybeIndexRecord(rec);
 }
 
-function indexObjectRecord(rec) {
+async function indexObjectRecord(rec) {
 	if(isRecordIgnored(rec))
 		return setRecordDeleted(rec);
 
-	return Promise.try(() => {
-		let desc = describeRecord(rec);
-		if(desc.objectType) { // have enough info in record
+	let desc = describeRecord(rec), describedRec = rec;
+	if(desc.objectType) { // have enough info in record
+		console.log(`indexObjectRecord ${recordToString(rec)} description`, desc);
+		describedRec = _.extend(rec, desc);
+	} else {
+		const obj = await readRemotePackedObject(rec.assetUri);
+		if(obj) {
+			const desc = describeObject(obj);
 			console.log(`indexObjectRecord ${recordToString(rec)} description`, desc);
-			return _.extend(rec, desc);
+			describedRec = _.extend(rec, desc);
 		}
+	}
 
-		return readRemotePackedObject(rec.assetUri).then(obj => {
-			if(!obj)
-				return rec;
-			let desc = describeObject(obj);
-			console.log(`indexObjectRecord ${recordToString(rec)} description`, desc);
-			return _.extend(rec, desc);
-		});
-	}).tap((rec) => {
-		if(rec.worldUri)
-			return maybeFetchAndIndexPendingRecordUri(rec.worldUri);
-	}).tap((rec) => {
-		if(rec.inventoryLinkUris)
-			return maybeFetchAndIndexPendingRecordUris(rec.inventoryLinkUris, 1);
-	}).then((rec) => {
-		return maybeIndexRecord(rec);
-	});
+	if(describedRec.worldUri)
+		await maybeIndexPendingRecord(rec.worldUri);
+	if(describedRec.inventoryLinkUris)
+		await maybeFetchAndIndexPendingRecordUris(describedRec.inventoryLinkUris, 1);
+
+	await maybeIndexRecord(describedRec);
 }
 
-function indexWorldRecord(rec) {
+async function indexWorldRecord(rec) {
 	if(isRecordIgnored(rec))
 		return setRecordDeleted(rec);
 
-	return Promise.try(() => {
-		return readRemotePackedObject(rec.assetUri).then(obj => {
-			if(!obj)
-				return rec;
-			let desc = describeWorld(obj);
-			console.log(`indexWorldRecord ${recordToString(rec)} description`, desc);
-			return _.extend(rec, desc);
-		});
-	}).tap((rec) => {
-		if(rec.inventoryLinkUris)
-			return maybeFetchAndIndexPendingRecordUris(rec.inventoryLinkUris, 1);
-	}).then((rec) => {
-		return maybeIndexRecord(rec);
-	});
+	let describedRec = rec;
+	const obj = await readRemotePackedObject(rec.assetUri);
+	if(obj) {
+		const desc = describeWorld(obj);
+		console.log(`indexWorldRecord ${recordToString(rec)} description`, desc);
+		describedRec = _.extend(rec, desc);
+	}
+
+	if(describedRec.inventoryLinkUris)
+		await maybeFetchAndIndexPendingRecordUris(describedRec.inventoryLinkUris, 1);
+
+	await maybeIndexRecord(describedRec);
 }
 
-function indexGenericRecord(rec) {
+async function indexGenericRecord(rec) {
 	if(isRecordIgnored(rec))
 		return setRecordDeleted(rec);
-	return maybeIndexRecord(rec);
+
+	await maybeIndexRecord(rec);
 }
 
-function deletePendingRecord(rec) {
+async function deletePendingRecord(rec) {
 	const uri = cloudx.getRecordUri(rec);
 	if(deletedPendingRecordsThisLoop.has(uri)) {
 		console.log(`deletePendingRecord ${recordToString(rec)} already deleted`);
-		return Promise.resolve(false);
+		return false;
 	}
+
 	deletedPendingRecordsThisLoop.add(uri);
-	return db.deletePendingRecord(rec).then(() => true);
+	await db.deletePendingRecord(rec);
+	return true;
 }
 
 let deletedPendingRecordsThisLoop;
-function indexPendingRecords() {
-	return Promise.resolve(db.getSomePendingRecords(BATCH_SIZE)).then(records => {
-		if(!records.length)
-			throw "break";
+async function indexPendingRecords() {
+	const records = await db.getSomePendingRecords(BATCH_SIZE)
+	if(!records.length)
+		return;
 
-		deletedPendingRecordsThisLoop = new Set;
+	deletedPendingRecordsThisLoop = new Set;
 
-		// deduplicate records to prevent elastic race condition
-		const recordsByUri = indexBy(records, rec => cloudx.getRecordUri(rec));
-		return recordsByUri.values();
-	}).map(rec => {
+	// deduplicate records to prevent elastic race condition
+	const recordsByUri = indexBy(records, rec => cloudx.getRecordUri(rec));
+	const dedupedRecords = Array.from(recordsByUri.values());
+
+	await promiseMap(dedupedRecords, rec => {
 		const uri = cloudx.getRecordUri(rec);
 		if(deletedPendingRecordsThisLoop.has(uri)) {
 			console.log(`processPendingRecord ${recordToString(rec)} skipped already deleted pending record`);
@@ -217,100 +214,114 @@ function indexPendingRecords() {
 		}).then(() => {
 			return deletePendingRecord(rec);
 		});
-	}, { concurrency: CONCURRENCY }).then(indexPendingRecords).catch(err => {
-		if(err !== "break")
-			throw err;
-	});
+	}, CONCURRENCY);
+
+	return indexPendingRecords();
 }
 
-function getAllDirectoryRecords() {
-	return db.searchRecords({
+async function getAllDirectoryRecords() {
+	const res = await db.searchRecords({
 		bool: {
 			filter: [
-				{ term: { recordType: "directory" }},
-				{ term: { isDeleted: false }},
+				{ term: { recordType: "directory" } },
+				{ term: { isDeleted: false } },
 			]
 		}
-	}, Infinity).then(res => res.hits);
+	}, Infinity);
+
+	return res.hits;
 }
 
+async function deleteIgnoredDirectories() {
+	const records = await getAllDirectoryRecords();
 
-function deleteIgnoredDirectories() {
-	return getAllDirectoryRecords().then(records => {
-		return Promise.map(records, rec => {
-			if(isRecordIgnored(rec)) {
-				console.log(`deleteIgnoredDirectories ${recordToString(rec)}`);
-				return handleIgnoredDirectoryRecord(rec);
-			}
-		}, { concurrency: CONCURRENCY });
+	return promiseMap(records, rec => {
+		if(isRecordIgnored(rec)) {
+			console.log(`deleteIgnoredDirectories ${recordToString(rec)}`);
+			return handleIgnoredDirectoryRecord(rec);
+		}
 	});
 }
 
-function rescan() {
-	return Promise.join(
+async function rescan() {
+	const [records, pendingRecords] = await Promise.all([
 		getAllDirectoryRecords(),
 		db.searchPendingRecords({
 			term: { recordType: "directory" }
 		}, Infinity).then(res => res.hits)
-	).spread((records, pendingRecords) => {
-		console.log(`rescan ${records.length} records, ${pendingRecords.length} pending records`);
-		let pendingRecordsByUri = new Set;
-		for(let rec of pendingRecords)
-			pendingRecordsByUri.add(cloudx.getRecordUri(rec));
+	]);
+	console.log(`rescan ${records.length} records, ${pendingRecords.length} pending records`);
 
-		let count = 0;
-		return Promise.map(records, rec => {
-			let uri = cloudx.getRecordUri(rec);
-			if(pendingRecordsByUri.has(uri))
-				return;
-			pendingRecordsByUri.add(uri); // prevent adding more dupes
-			count++;
-			return db.indexPendingRecord(rec);
-		}, { concurrency: CONCURRENCY }).then(() => count);
-	}).then(count => {
-		console.log(`rescan added ${count} pending directory records`);
+	let pendingRecordsByUri = new Set;
+	for(let rec of pendingRecords)
+		pendingRecordsByUri.add(cloudx.getRecordUri(rec));
+
+	let count = 0;
+	await promiseMap(records, rec => {
+		let uri = cloudx.getRecordUri(rec);
+		if(pendingRecordsByUri.has(uri))
+			return;
+		pendingRecordsByUri.add(uri); // prevent adding more dupes
+		count++;
+		return db.indexPendingRecord(rec);
 	});
+	console.log(`rescan added ${count} pending directory records`);
 }
 
-function propagateIsDeleted() {
-	return db.searchRecords({
-		term: { isDeleted: true }
-	}, Infinity).then(({ hits: deletedRecords }) => {
-		console.log(`propagateIsDeleted ${deletedRecords.length} deleted records`);
-		let deletedRecordsByUri = new Set;
-		for(let rec of deletedRecords)
-			deletedRecordsByUri.add(cloudx.getRecordUri(rec));
+// function propagateIsDeleted() {
+// 	return db.searchRecords({
+// 		term: { isDeleted: true }
+// 	}, Infinity).then(({ hits: deletedRecords }) => {
+// 		console.log(`propagateIsDeleted ${deletedRecords.length} deleted records`);
+// 		let deletedRecordsByUri = new Set;
+// 		for(let rec of deletedRecords)
+// 			deletedRecordsByUri.add(cloudx.getRecordUri(rec));
 
-		let count = 0;
-		return Promise.map(deletedRecords, rec => {
-			if(rec.recordType !== "directory")
-				return;
+// 		let count = 0;
+// 		return Promise.map(deletedRecords, rec => {
+// 			if(rec.recordType !== "directory")
+// 				return;
 
-			return Promise.map(db.searchRecords(db.buildChildrenQuery(rec)).then(res => res.hits), child => {
-				let uri = cloudx.getRecordUri(child);
-				if(deletedRecordsByUri.has(uri))
-					return;
+// 			return Promise.map(db.searchRecords(db.buildChildrenQuery(rec)).then(res => res.hits), child => {
+// 				let uri = cloudx.getRecordUri(child);
+// 				if(deletedRecordsByUri.has(uri))
+// 					return;
 
-				count++;
-				console.log(`propagateIsDeleted ${recordToString(child)} should also be deleted`);
-				return setRecordDeleted(child);
-			});
-		}, { concurrency: CONCURRENCY }).then(() => count);
-	}).then((count) => {
-		if(count)
-			return propagateIsDeleted();
-	});
-}
+// 				count++;
+// 				console.log(`propagateIsDeleted ${recordToString(child)} should also be deleted`);
+// 				return setRecordDeleted(child);
+// 			});
+// 		}, { concurrency: CONCURRENCY }).then(() => count);
+// 	}).then((count) => {
+// 		if(count)
+// 			return propagateIsDeleted();
+// 	});
+// }
 
 const action = process.argv[2];
-function asyncMain() {
+async function asyncMain() {
 	if(action === "deleteIgnoredDirectories")
 		return deleteIgnoredDirectories();
 
-	return maybeFetchAndIndexPendingRecordUris(roots, CONCURRENCY).then(() => {
-		if(process.argv[2] === "rescan")
-			return rescan();
-	}).then(indexPendingRecords); //.then(propagateIsDeleted);
+	await maybeFetchAndIndexPendingRecordUris(roots, CONCURRENCY);
+
+	if(action === "index") {
+		const recordStub = process.argv[3] && cloudx.parseRecordUri(process.argv[3]);
+		if(!recordStub) {
+			console.error("Usage: spider.js reindex RECORD_URI");
+			process.exit(1);
+		}
+		const record = await fetchRecordCached(recordStub);
+		if(!record)
+			throw new Error(`Record ${getRecordUri(recordStub)} not found.`);
+
+		console.log(`index ${recordToString(record)}`);
+		await db.indexPendingRecord(record);
+	} else if(action === "rescan") {
+		await rescan();
+	}
+
+	await indexPendingRecords();
 }
 
 asyncMain().then(() => {
