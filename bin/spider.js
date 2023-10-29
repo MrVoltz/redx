@@ -19,8 +19,8 @@ const BATCH_SIZE = 16;
 
 function handleIgnoredDirectoryRecord(rec) {
 	return Promise.all([
-		db.searchRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
-		db.searchPendingRecords(db.buildChildrenQuery(rec), db.MAX_SIZE).then(res => res.hits),
+		db.searchRecords(db.buildChildrenQuery(rec, true, true), db.MAX_SIZE).then(res => res.hits),
+		db.searchPendingRecords(db.buildChildrenQuery(rec, true, true), db.MAX_SIZE).then(res => res.hits),
 	]).then(([localChildren, localPendingChildren]) => {
 		return Promise.all([
 			...localChildren.map(child => {
@@ -76,6 +76,9 @@ function indexDirectoryRecord(rec) {
 	]).then(([apiChildren, localChildren, localPendingChildren]) => {
 		if(isRecordDeleted)
 			return handleDeletedDirectoryRecord(localChildren, localPendingChildren);
+
+		if(apiChildren.some(child => child.name === ".noindex"))
+			return handleIgnoredDirectoryRecord(rec);
 
 		const apiChildrenById = indexBy(apiChildren, "id");
 		const localChildrenById = indexBy(localChildren, "id");
@@ -138,8 +141,6 @@ async function indexObjectRecord(rec) {
 
 	if(describedRec.worldUri)
 		await maybeIndexPendingRecord(rec.worldUri);
-	if(describedRec.inventoryLinkUris)
-		await maybeFetchAndIndexPendingRecordUris(describedRec.inventoryLinkUris, 1);
 
 	await maybeIndexRecord(describedRec);
 }
@@ -155,9 +156,6 @@ async function indexWorldRecord(rec) {
 		console.log(`indexWorldRecord ${recordToString(rec)} description`, desc);
 		describedRec = _.extend(rec, desc);
 	}
-
-	if(describedRec.inventoryLinkUris)
-		await maybeFetchAndIndexPendingRecordUris(describedRec.inventoryLinkUris, 1);
 
 	await maybeIndexRecord(describedRec);
 }
@@ -267,36 +265,6 @@ async function rescan() {
 	});
 	console.log(`rescan added ${count} pending directory records`);
 }
-
-// function propagateIsDeleted() {
-// 	return db.searchRecords({
-// 		term: { isDeleted: true }
-// 	}, Infinity).then(({ hits: deletedRecords }) => {
-// 		console.log(`propagateIsDeleted ${deletedRecords.length} deleted records`);
-// 		let deletedRecordsByUri = new Set;
-// 		for(let rec of deletedRecords)
-// 			deletedRecordsByUri.add(cloudx.getRecordUri(rec));
-
-// 		let count = 0;
-// 		return Promise.map(deletedRecords, rec => {
-// 			if(rec.recordType !== "directory")
-// 				return;
-
-// 			return Promise.map(db.searchRecords(db.buildChildrenQuery(rec)).then(res => res.hits), child => {
-// 				let uri = cloudx.getRecordUri(child);
-// 				if(deletedRecordsByUri.has(uri))
-// 					return;
-
-// 				count++;
-// 				console.log(`propagateIsDeleted ${recordToString(child)} should also be deleted`);
-// 				return setRecordDeleted(child);
-// 			});
-// 		}, { concurrency: CONCURRENCY }).then(() => count);
-// 	}).then((count) => {
-// 		if(count)
-// 			return propagateIsDeleted();
-// 	});
-// }
 
 const action = process.argv[2];
 async function asyncMain() {

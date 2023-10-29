@@ -1,3 +1,9 @@
+// To have your directory (including all subdirectories) removed from RedX, there are multiple options:
+//
+// 1. Create a record named ".noindex" (without quotes, case-sensitive) in the folder and wait up to 1 week for reindex
+// 2. Generate record hashes using `node bin/hash.js RECORD_URI` and submit a pull request to add them into this file
+// 3. DM the Record URL to MrVoltz on Discord, so he can do the step 2 for you
+
 module.exports = {
 	salt: "V02xJoVGI1Klw371yIl3S2c7tWzzrbNN",
 	ignoredRecordUris: [
