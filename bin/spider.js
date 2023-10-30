@@ -17,6 +17,15 @@ const { fetchRecordCached } = require("../lib/cloudx-cache");
 const CONCURRENCY = 1;
 const BATCH_SIZE = 16;
 
+async function handleLinkRecordInIgnoredDirectory(rec) {
+	const targetStub = cloudx.parseRecordUri(rec.assetUri);
+	if(!targetStub)
+		return;
+	const target = await db.getRecord(targetStub);
+	if(!isRecordIgnored(target || targetStub))
+		console.log(`shouldBeAlsoIgnored ${recordToString(target || targetStub)}`);
+}
+
 function handleIgnoredDirectoryRecord(rec) {
 	return Promise.all([
 		db.searchRecords(db.buildChildrenQuery(rec, true, true), db.MAX_SIZE).then(res => res.hits),
@@ -25,7 +34,10 @@ function handleIgnoredDirectoryRecord(rec) {
 		return Promise.all([
 			...localChildren.map(child => {
 				console.log(`indexDirectoryRecord ${recordToString(rec)} ignored removed child ${recordToString(child)}`);
-				return setRecordDeleted(child);
+				return setRecordDeleted(child).then(() => {
+					if(child.recordType === "link")
+						return handleLinkRecordInIgnoredDirectory(child);
+				});
 			}),
 			...localPendingChildren.map(child => {
 				console.log(`indexDirectoryRecord ${recordToString(rec)} ignored removed pending child ${recordToString(child)}`);
@@ -217,14 +229,15 @@ async function indexPendingRecords() {
 	return indexPendingRecords();
 }
 
-async function getAllDirectoryRecords() {
+async function getAllDirectoryRecords(inclDeleted = false) {
+	const filter = [
+		{ term: { recordType: "directory" } },
+	];
+	if(!inclDeleted)
+		filter.push({ term: { isDeleted: false } });
+
 	const res = await db.searchRecords({
-		bool: {
-			filter: [
-				{ term: { recordType: "directory" } },
-				{ term: { isDeleted: false } },
-			]
-		}
+		bool: { filter },
 	}, Infinity);
 
 	return res.hits;

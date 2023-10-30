@@ -25,8 +25,8 @@ function asyncMain() {
 	return fetchRecord(recordStub).then(record => {
 		console.error(recordToString(record));
 
-		console.log(getRecordHash({ ownerId: record.ownerId, id: record.id }));
-		console.log(getRecordHash({ ownerId: record.ownerId, path: record.path, name: record.name, }));
+		console.log(JSON.stringify(getRecordHash({ ownerId: record.ownerId, id: record.id })));
+		console.log(JSON.stringify(getRecordHash({ ownerId: record.ownerId, path: record.path, name: record.name, })));
 	});
 }
 
